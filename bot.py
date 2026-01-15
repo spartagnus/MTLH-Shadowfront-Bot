@@ -28,7 +28,7 @@ INTENTS.members = True  # resolve mentions
 bot = commands.Bot(command_prefix=None, intents=INTENTS, help_command=None)
 tree = bot.tree
 
-DB_PATH = os.getenv("DB_PATH", "guild_teams.db")
+DB_PATH = os.getenv("DB_PATH", "guild_teams_new.db")
 FIXED_EVENT_NAME = "Shadowfront"
 
 # ---------- Database ----------
@@ -339,7 +339,6 @@ def roster_embed(ev: sqlite3.Row, guild: discord.Guild) -> discord.Embed:
             )
             embed.add_field(name="\u200b", value="\u200b", inline=False)
 
-    embed.set_footer(text="Buttons: Team 1/2, Leave • Slash: /event_setteamtime, /event_setteamlabels, /event_setchannel, /event_setautorefresh, /event_lock, /event_unlock, /event_setcommander, /event_unsetcommander, /promote, /event_reset, /export, /sync")
     return embed
 
 # ---------- Buttons (reduced UI) ----------
