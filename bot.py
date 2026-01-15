@@ -8,7 +8,7 @@
 #   * L = event reference timezone local (from auto_refresh_tz, default Australia/Brisbane), formatted 24h w/o colon
 #   * UTC = chosen slot (0900/1800/2300), formatted 24h w/o colon
 # - Manager-only buttons: Lock, Unlock, Promote (Team 1/2 × Squad A/B), Reset
-# - Commands include: create, setchannel, setteamtime (slot picker), setcommander/unsetcommander, reset, export, labels, autorefresh, deleteall, sync
+# - Commands include: create, setchannel, setteamtime (slot picker), setcommander/unsetcommander, reset, export, labels, autorefresh, deleteall, sync, sync_full
 # - Railway-friendly: reads DISCORD_TOKEN and optional DB_PATH; supports Volume @ /data
 
 import os
@@ -709,7 +709,8 @@ async def on_ready():
         # Per-guild instant command sync (avoid global delays)
         for g in bot.guilds:
             try:
-                await tree.sync(guild=g)
+                synced = await tree.sync(guild=g)
+                print(f"Synced {len(synced)} commands to guild {g.id}")
             except Exception as e:
                 print("Per-guild sync error:", e)
         print("Per-guild command sync complete.")
@@ -897,22 +898,22 @@ async def event_unlock(interaction: discord.Interaction, name: str):
 
 # ---- Team time setter (fixed UTC slots only) ----
 
-TIME_CHOICE_0900 = app_commands.Choice(name="09:00 UTC", value="0900")
-TIME_CHOICE_1800 = app_commands.Choice(name="18:00 UTC", value="1800")
-TIME_CHOICE_2300 = app_commands.Choice(name="23:00 UTC", value="2300")
-
 @tree.command(description="Set the time slot for Team 1 or Team 2 (choose 09:00, 18:00, or 23:00 UTC).")
 @app_commands.describe(
     name="Event name",
     team="A or B (A = Team 1, B = Team 2)",
     slot="One of 09:00, 18:00, 23:00 UTC"
 )
-@app_commands.choices(slot=[TIME_CHOICE_0900, TIME_CHOICE_1800, TIME_CHOICE_2300])
+@app_commands.choices(slot=[
+    app_commands.Choice(name="09:00 UTC", value="0900"),
+    app_commands.Choice(name="18:00 UTC", value="1800"),
+    app_commands.Choice(name="23:00 UTC", value="2300"),
+])
 async def event_setteamtime(
     interaction: discord.Interaction,
     name: str,
     team: app_commands.Transform[str, TeamChoice],
-    slot: app_commands.Choice[str]
+    slot: str  # using str here is the most reliable with choices()
 ):
     with db() as conn:
         ev = get_event(conn, interaction.guild_id, name)
@@ -927,13 +928,14 @@ async def event_setteamtime(
             return
         c = conn.cursor()
         if team == "A":
-            c.execute("UPDATE events SET team_a_slot=? WHERE id=?", (slot.value, ev["id"]))
+            c.execute("UPDATE events SET team_a_slot=? WHERE id=?", (slot, ev["id"]))
         else:
-            c.execute("UPDATE events SET team_b_slot=? WHERE id=?", (slot.value, ev["id"]))
+            c.execute("UPDATE events SET team_b_slot=? WHERE id=?", (slot, ev["id"]))
 
+    label = {"0900": "09:00 UTC", "1800": "18:00 UTC", "2300": "23:00 UTC"}.get(slot, slot)
     await refresh_roster_message(interaction.guild, name)
     await interaction.response.send_message(
-        f"Set **{team_label(ev, team)}** time to **{slot.name}**. Live roster updated.",
+        f"Set **{team_label(ev, team)}** time to **{label}**. Live roster updated.",
         ephemeral=True
     )
 
@@ -1368,6 +1370,8 @@ async def event_deleteall(interaction: discord.Interaction):
         ephemeral=True
     )
 
+# ---- Sync helpers ----
+
 @tree.command(description="Sync slash commands to this server (admin only).")
 async def sync(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.manage_guild:
@@ -1380,6 +1384,28 @@ async def sync(interaction: discord.Interaction):
         synced = await tree.sync(guild=interaction.guild)
         await interaction.response.send_message(
             f"✅ Synced **{len(synced)}** command(s) to this server.",
+            ephemeral=True
+        )
+    except Exception as e:
+        await interaction.response.send_message(
+            f"❌ Sync failed: `{e}`",
+            ephemeral=True
+        )
+
+@tree.command(description="Full re-sync of commands to this server (admin only).")
+async def sync_full(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message(
+            "You must have **Manage Server** to run /sync_full.",
+            ephemeral=True
+        )
+        return
+    try:
+        await tree.clear_commands(guild=interaction.guild)
+        await tree.copy_global_to(guild=interaction.guild)
+        synced = await tree.sync(guild=interaction.guild)
+        await interaction.response.send_message(
+            f"✅ Full re-sync complete: **{len(synced)}** command(s) updated.",
             ephemeral=True
         )
     except Exception as e:
