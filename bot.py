@@ -861,6 +861,119 @@ async def sync_full(interaction: discord.Interaction):
     except Exception as e:
         await interaction.response.send_message(f"❌ Full global re-sync failed: `{e}`", ephemeral=True)
 
+@tree.command(description="(Manager) Add a member to Team 1 or Team 2 (optional squad or backup).")
+@app_commands.describe(
+    user="Member to add",
+    team="A or B (A = Team 1, B = Team 2)",
+    squad="Optional: A or B to target a specific squad; leave empty for auto",
+    as_backup="If true, add the member to the backups list for that team"
+)
+async def event_addmember(
+    interaction: discord.Interaction,
+    user: discord.Member,
+    team: app_commands.Transform[str, TeamChoice],
+    squad: Optional[app_commands.Transform[str, SquadChoice]] = None,
+    as_backup: bool = False
+):
+    # Load the single fixed event
+    with db() as conn:
+        ev = get_fixed_event(conn, interaction.guild_id) or ensure_fixed_event(conn, interaction.guild_id, interaction.user.id)
+        # Permission check (Manage Server OR event manager)
+        if not user_is_event_manager_or_admin(ev, interaction.user):
+            await interaction.response.send_message("You must be an event manager or have **Manage Server**.", ephemeral=True)
+            return
+
+        # See if the target user is already enrolled
+        existing = user_enrollment(conn, ev["id"], user.id)
+        if existing:
+            if existing["team"] == team:
+                # Already on this team—inform and stop
+                loc = (
+                    f"{team_label(ev, team)} — {'Squad A' if existing['squad']=='SA' else 'Squad B'}"
+                    if existing["slot_type"] == "main"
+                    else f"{team_label(ev, team)} (backup)"
+                )
+                await interaction.response.send_message(
+                    f"{user.mention} is already on **{loc}**.",
+                    ephemeral=True
+                )
+                return
+            else:
+                # On the other team—require a cleanup first (consistent with normal join)
+                await interaction.response.send_message(
+                    f"{user.mention} is already registered on **{team_label(ev, existing['team'])}**. "
+                    f"Ask them to `/leave` first (or remove them) before re-adding.",
+                    ephemeral=True
+                )
+                return
+
+        # Compute requested squad (if provided)
+        requested_squad = squad if squad in ("SA", "SB") else None
+
+        # Use the same join logic you already have for consistency
+        slot_type, note = add_participant(
+            conn,
+            ev,
+            user.id,
+            team,
+            requested_squad,
+            force_backup=as_backup
+        )
+
+        if not slot_type:
+            # add_participant returns a friendly reason (full/locked/etc.)
+            await interaction.response.send_message(note, ephemeral=True)
+            return
+
+    # Refresh the live message
+    await refresh_roster_message(interaction.guild)
+
+    # Build a success message
+    if slot_type == "backup":
+        await interaction.response.send_message(
+            f"Added {user.mention} to **{team_label(ev, team)}** as **backup**.",
+            ephemeral=True
+        )
+    else:
+        with db() as conn:
+            rec = user_enrollment(conn, ev["id"], user.id)
+        sq = rec["squad"] if rec else "SA"
+        await interaction.response.send_message(
+            f"Added {user.mention} to **{team_label(ev, team)} — {'Squad A' if sq=='SA' else 'Squad B'}** as **main**.",
+            ephemeral=True
+        )
+
+@tree.command(description="(Manager) Remove a member from Shadowfront.")
+@app_commands.describe(user="Member to remove")
+async def event_removemember(interaction: discord.Interaction, user: discord.Member):
+    with db() as conn:
+        ev = get_fixed_event(conn, interaction.guild_id)
+        if not ev:
+            await interaction.response.send_message("Event not found.", ephemeral=True)
+            return
+        if not user_is_event_manager_or_admin(ev, interaction.user):
+            await interaction.response.send_message("You must be an event manager or have **Manage Server**.", ephemeral=True)
+            return
+
+        existing = user_enrollment(conn, ev["id"], user.id)
+        if not existing:
+            await interaction.response.send_message(f"{user.mention} is not registered for **{team_label(ev, 'A')}** or **{team_label(ev, 'B')}**.", ephemeral=True)
+            return
+
+        # Remove and optionally promote earliest backup if a main non-commander leaves
+        promoted_user_id = None
+        c = conn.cursor()
+        c.execute("DELETE FROM rosters WHERE event_id=? AND user_id=?", (ev["id"], user.id))
+        if existing["slot_type"] == "main" and existing["is_commander"] == 0 and existing["squad"] in ("SA","SB"):
+            promoted_user_id = promote_one_non_commander(conn, ev, existing["team"], existing["squad"])
+
+    await refresh_roster_message(interaction.guild)
+    msg = f"Removed {user.mention} from **{team_label(ev, existing['team'])}**."
+    if promoted_user_id:
+        member = interaction.guild.get_member(promoted_user_id)
+        msg += f" Promoted {member.mention if member else f'<@{promoted_user_id}>'} to **main**."
+    await interaction.response.send_message(msg, ephemeral=True)
+
 @tree.command(description="Purge this server's guild-scoped commands (admin only).")
 async def purge_guild(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.manage_guild:
