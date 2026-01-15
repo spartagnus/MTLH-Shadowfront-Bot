@@ -387,7 +387,7 @@ def roster_embed(ev: sqlite3.Row, guild: discord.Guild) -> discord.Embed:
                     guild.get_member(uid).mention if guild.get_member(uid) else f"<@{uid}>"
                     for uid in uids
                 ]
-                return "
+                return
 ".join(names) if names else "*None*"
 
             embed.add_field(
