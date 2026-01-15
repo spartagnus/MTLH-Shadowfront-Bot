@@ -296,13 +296,7 @@ def user_is_event_manager_or_admin(ev: sqlite3.Row, member: discord.Member) -> b
 def roster_embed(ev: sqlite3.Row, guild: discord.Guild) -> discord.Embed:
     embed = discord.Embed(
         title=f"Event: {FIXED_EVENT_NAME}",
-        description=(
-            f"Status: **{ev['status']}** | Teams: **{ev['teams']}** | "
-            f"Mains: Squad A {ev['squad_a_size']} (cmdrs {ev['squad_a_commander_quota']}), "
-            f"Squad B {ev['squad_b_size']} (cmdrs {ev['squad_b_commander_quota']}) | "
-            f"Backups per team: **{ev['backup_size']}**"
-        ),
-        color=discord.Color.blurple()
+             color=discord.Color.blurple()
     )
 
     with db() as conn:
@@ -519,7 +513,7 @@ class SquadChoice(app_commands.Transformer):
 
 # ----- Config/admin (no event name args) -----
 @tree.command(description="Set the roster display channel (manager only).")
-async def event_setchannel(interaction: discord.Interaction, channel: discord.TextChannel):
+async def setchannel(interaction: discord.Interaction, channel: discord.TextChannel):
     with db() as conn:
         ev = get_fixed_event(conn, interaction.guild_id) or ensure_fixed_event(conn, interaction.guild_id, interaction.user.id)
         if not user_is_event_manager_or_admin(ev, interaction.user):
@@ -536,7 +530,7 @@ async def event_setchannel(interaction: discord.Interaction, channel: discord.Te
     app_commands.Choice(name="18:00 UTC", value="1800"),
     app_commands.Choice(name="23:00 UTC", value="2300"),
 ])
-async def event_setteamtime(interaction: discord.Interaction, team: app_commands.Transform[str, TeamChoice], slot: str):
+async def setteamtime(interaction: discord.Interaction, team: app_commands.Transform[str, TeamChoice], slot: str):
     with db() as conn:
         ev = get_fixed_event(conn, interaction.guild_id) or ensure_fixed_event(conn, interaction.guild_id, interaction.user.id)
         if not user_is_event_manager_or_admin(ev, interaction.user):
@@ -549,7 +543,7 @@ async def event_setteamtime(interaction: discord.Interaction, team: app_commands
     await interaction.response.send_message(f"Set **{team_label(ev, team)}** time to **{slot} UTC**.", ephemeral=True)
 
 @tree.command(description="Set the display labels for Team 1 (A) and Team 2 (B).")
-async def event_setteamlabels(interaction: discord.Interaction, team1_label: str, team2_label: str):
+async def setteamlabels(interaction: discord.Interaction, team1_label: str, team2_label: str):
     with db() as conn:
         ev = get_fixed_event(conn, interaction.guild_id) or ensure_fixed_event(conn, interaction.guild_id, interaction.user.id)
         if not user_is_event_manager_or_admin(ev, interaction.user):
@@ -559,7 +553,7 @@ async def event_setteamlabels(interaction: discord.Interaction, team1_label: str
     await interaction.response.send_message(f"Updated team labels. Live roster updated.", ephemeral=True)
 
 @tree.command(description="Configure weekly auto-refresh for the roster (manager only).")
-async def event_setautorefresh(interaction: discord.Interaction, enable: bool = True, day: str = "MON", hour: int = 9, tz: str = "Australia/Brisbane"):
+async def setautorefresh(interaction: discord.Interaction, enable: bool = True, day: str = "MON", hour: int = 9, tz: str = "Australia/Brisbane"):
     day = day.upper()
     if day not in {"MON","TUE","WED","THU","FRI","SAT","SUN"}:
         await interaction.response.send_message("Invalid day. Use MON..SUN.", ephemeral=True); return
@@ -581,7 +575,7 @@ async def event_setautorefresh(interaction: discord.Interaction, enable: bool = 
 
 # ----- Manager actions (no UI buttons) -----
 @tree.command(description="Lock Shadowfront to stop new signups (manager only).")
-async def event_lock(interaction: discord.Interaction):
+async def lock(interaction: discord.Interaction):
     with db() as conn:
         ev = get_fixed_event(conn, interaction.guild_id)
         if not ev: await interaction.response.send_message("Event not found.", ephemeral=True); return
@@ -592,7 +586,7 @@ async def event_lock(interaction: discord.Interaction):
     await interaction.response.send_message("Event locked. Roster updated.", ephemeral=True)
 
 @tree.command(description="Unlock Shadowfront to allow signups again (manager only).")
-async def event_unlock(interaction: discord.Interaction):
+async def unlock(interaction: discord.Interaction):
     with db() as conn:
         ev = get_fixed_event(conn, interaction.guild_id)
         if not ev: await interaction.response.send_message("Event not found.", ephemeral=True); return
@@ -603,7 +597,7 @@ async def event_unlock(interaction: discord.Interaction):
     await interaction.response.send_message("Event unlocked. Roster updated.", ephemeral=True)
 
 @tree.command(description="Reset Shadowfront: clears all mains/backups and re-opens signups (manager only).")
-async def event_reset(interaction: discord.Interaction, clear_message: bool = False):
+async def reset(interaction: discord.Interaction, clear_message: bool = False):
     with db() as conn:
         ev = get_fixed_event(conn, interaction.guild_id)
         if not ev: await interaction.response.send_message("Event not found.", ephemeral=True); return
@@ -648,7 +642,7 @@ async def promote(interaction: discord.Interaction, team: app_commands.Transform
     )
 
 @tree.command(description="Assign a commander to a team & squad (manager only).")
-async def event_setcommander(
+async def setcommander(
     interaction: discord.Interaction,
     team: app_commands.Transform[str, TeamChoice],
     squad: app_commands.Transform[str, SquadChoice],
@@ -697,7 +691,7 @@ async def event_setcommander(
     await interaction.response.send_message(action + " Live roster updated.", ephemeral=True)
 
 @tree.command(description="Remove commander status (manager only). Optionally demote to backup.")
-async def event_unsetcommander(
+async def unsetcommander(
     interaction: discord.Interaction,
     team: app_commands.Transform[str, TeamChoice],
     user: discord.Member,
@@ -815,7 +809,7 @@ async def export(interaction: discord.Interaction):
     await interaction.response.send_message(content="Export complete.", file=file, ephemeral=True)
 
 @tree.command(description="Delete ALL events for this server (admin only; cannot be undone).")
-async def event_deleteall(interaction: discord.Interaction):
+async def deleteall(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.manage_guild:
         await interaction.response.send_message("You must have Manage Server.", ephemeral=True); return
     with db() as conn:
@@ -868,7 +862,7 @@ async def sync_full(interaction: discord.Interaction):
     squad="Optional: A or B to target a specific squad; leave empty for auto",
     as_backup="If true, add the member to the backups list for that team"
 )
-async def event_addmember(
+async def addmember(
     interaction: discord.Interaction,
     user: discord.Member,
     team: app_commands.Transform[str, TeamChoice],
@@ -945,7 +939,7 @@ async def event_addmember(
 
 @tree.command(description="(Manager) Remove a member from Shadowfront.")
 @app_commands.describe(user="Member to remove")
-async def event_removemember(interaction: discord.Interaction, user: discord.Member):
+async def removemember(interaction: discord.Interaction, user: discord.Member):
     with db() as conn:
         ev = get_fixed_event(conn, interaction.guild_id)
         if not ev:
