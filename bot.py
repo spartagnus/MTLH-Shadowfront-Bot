@@ -1030,4 +1030,3 @@ async def sync_full(interaction: discord.Interaction):
         )
 
 bot.run(TOKEN)
-``
