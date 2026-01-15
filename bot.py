@@ -563,6 +563,20 @@ async def event_setteamtime(interaction: discord.Interaction, team: app_commands
     await refresh_roster_message(interaction.guild)
     await interaction.response.send_message(f"Set **{team_label(ev, team)}** time to **{slot} UTC**.", ephemeral=True)
 
+@tree.command(description="(Admin) PURGE ALL GLOBAL application commands. Use once, then redeploy.")
+async def purge_global(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message("You must have Manage Server.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    # Clear local definition cache (GLOBAL scope) and sync empty -> deletes global commands on Discord
+    await tree.clear_commands()
+    await tree.sync()
+    await interaction.followup.send(
+        "🧹 Purged ALL **GLOBAL** commands. Now **redeploy/restart** the bot to publish only the current set.",
+        ephemeral=True
+    )
+
 @tree.command(description="Set the display labels for Team 1 (A) and Team 2 (B).")
 async def event_setteamlabels(interaction: discord.Interaction, team1_label: str, team2_label: str):
     with db() as conn:
