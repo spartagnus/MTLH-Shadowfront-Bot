@@ -1,4 +1,3 @@
-
 # bot.py
 # Single-event bot for "Shadowfront" — global app commands, minimal buttons, manager slash commands
 
