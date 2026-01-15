@@ -3,10 +3,12 @@
 # Discord Guild Teams Manager — Shadowfront Teams with Squads + Fixed UTC time slots
 # - Two teams with squads: Squad A (15, 2 commanders), Squad B (5, 1 commander); backups per team = 10
 # - Per-team time can ONLY be one of: 09:00 UTC, 18:00 UTC, 23:00 UTC
-# - Roster embed shows those times as Discord timestamps (<t:...>) so each user sees their local time
-# - Buttons (simplified): Join Team 1/2, Backup Team 1/2, Leave
+# - Roster embed shows those times as Discord timestamps (<t:...>) so each user sees local time automatically
+# - Buttons (simplified): "Team 1 (L 0900 UTC 2300)", "Team 2 (L 1800 UTC 0900)", Backup Team 1/2, Leave
+#   * L = event reference timezone local (from auto_refresh_tz, default Australia/Brisbane), formatted 24h w/o colon
+#   * UTC = chosen slot (0900/1800/2300), formatted 24h w/o colon
 # - Manager-only buttons: Lock, Unlock, Promote (Team 1/2 × Squad A/B), Reset
-# - Commands include: create, setchannel, setteamtime (slot picker), setcommander/unsetcommander, reset, export, labels, autorefresh
+# - Commands include: create, setchannel, setteamtime (slot picker), setcommander/unsetcommander, reset, export, labels, autorefresh, deleteall, sync
 # - Railway-friendly: reads DISCORD_TOKEN and optional DB_PATH; supports Volume @ /data
 
 import os
@@ -111,7 +113,7 @@ def add_missing_columns(conn: sqlite3.Connection):
     if "authorized_role_id" not in ecols:
         c.execute("ALTER TABLE events ADD COLUMN authorized_role_id INTEGER")
 
-    # Keep these legacy text/unix columns in case old data exists; we won't use them now.
+    # Legacy text/unix fields (kept for backwards-compat; not used now)
     if "team_a_time_text" not in ecols:
         c.execute("ALTER TABLE events ADD COLUMN team_a_time_text TEXT")
     if "team_b_time_text" not in ecols:
@@ -231,10 +233,50 @@ def next_epoch_for_slot(slot: Optional[str]) -> Optional[int]:
         target = today_slot + timedelta(days=1)
     return int(target.timestamp())
 
-def slot_label_utc(slot: Optional[str]) -> str:
-    """Return '(HH:MM UTC)' or '(Not set)' for button labels (buttons don't render <t:...>)."""
-    mapping = {"0900": "(09:00 UTC)", "1800": "(18:00 UTC)", "2300": "(23:00 UTC)"}
-    return mapping.get(slot or "", "(Not set)")
+def team_slot(ev: sqlite3.Row, team_code: str) -> Optional[str]:
+    return ev["team_a_slot"] if team_code == "A" else ev["team_b_slot"]
+
+def event_tz(ev: sqlite3.Row):
+    """Return ZoneInfo for the event's reference timezone (used only for button 'L' display)."""
+    tzname = ev["auto_refresh_tz"] if "auto_refresh_tz" in ev.keys() and ev["auto_refresh_tz"] else "Australia/Brisbane"
+    try:
+        return ZoneInfo(tzname) if ZoneInfo else timezone.utc
+    except Exception:
+        return ZoneInfo("Australia/Brisbane") if ZoneInfo else timezone.utc
+
+def local_hhmm_no_colon(ev: sqlite3.Row, slot: Optional[str]) -> str:
+    """Compute next occurrence of the UTC slot, convert to event tz, format HHMM (no colon)."""
+    epoch = next_epoch_for_slot(slot)
+    if not epoch:
+        return "----"
+    tz = event_tz(ev)
+    dt_local = datetime.fromtimestamp(epoch, tz=tz)
+    return dt_local.strftime("%H%M")
+
+def slot_hhmm_no_colon(slot: Optional[str]) -> str:
+    return slot if slot in FIXED_SLOTS else "----"
+
+def button_dual_time_label(ev: sqlite3.Row, team_code: str) -> str:
+    """
+    Build label segment: (L 0900 UTC 2300)
+    L = event tz (not per-viewer; Discord buttons cannot render per-user local)
+    UTC = slot string
+    """
+    slot = team_slot(ev, team_code)
+    l_val = local_hhmm_no_colon(ev, slot)
+    u_val = slot_hhmm_no_colon(slot)
+    return f"(L {l_val} UTC {u_val})"
+
+def embed_time_for_team(ev: sqlite3.Row, team_code: str) -> str:
+    """
+    Show <t:epoch:F> (<t:epoch:R>) for next occurrence of the team's UTC slot.
+    Each viewer sees local time automatically (Discord feature).
+    """
+    slot = team_slot(ev, team_code)
+    epoch = next_epoch_for_slot(slot)
+    if epoch:
+        return f"<t:{epoch}:F> (<t:{epoch}:R>)"
+    return "_Not set_"
 
 # ---- Roster logic ----
 
@@ -385,22 +427,6 @@ def has_time_edit_permission(ev: sqlite3.Row, member: discord.Member) -> bool:
 def team_label(ev: sqlite3.Row, team_code: str) -> str:
     return (ev["team_a_label"] or "Shadowfront Team 1") if team_code == "A" else (ev["team_b_label"] or "Shadowfront Team 2")
 
-# ---- Time formatting for embed & buttons ----
-
-def team_slot(ev: sqlite3.Row, team_code: str) -> Optional[str]:
-    return ev["team_a_slot"] if team_code == "A" else ev["team_b_slot"]
-
-def embed_time_for_team(ev: sqlite3.Row, team_code: str) -> str:
-    """
-    Show <t:epoch:F> (<t:epoch:R>) for next occurrence of the team's UTC slot.
-    Each viewer sees local time automatically (Discord feature).
-    """
-    slot = team_slot(ev, team_code)
-    epoch = next_epoch_for_slot(slot)
-    if epoch:
-        return f"<t:{epoch}:F> (<t:{epoch}:R>)"
-    return "_Not set_"
-
 # ---- Embed ----
 
 def roster_embed(ev: sqlite3.Row, guild: discord.Guild, title_suffix: str = "") -> discord.Embed:
@@ -420,7 +446,7 @@ def roster_embed(ev: sqlite3.Row, guild: discord.Guild, title_suffix: str = "") 
     with db() as conn:
         for team in ["A", "B"][:ev["teams"]]:
             label = team_label(ev, team)
-            # Team time (Discord local)
+            # Team time (Discord local per viewer)
             embed.add_field(name=f"{label} — Time (UTC slot)", value=embed_time_for_team(ev, team), inline=False)
 
             commanders_sa, mains_sa, commanders_sb, mains_sb, backups = get_roster(conn, ev["id"], team)
@@ -460,7 +486,7 @@ def roster_embed(ev: sqlite3.Row, guild: discord.Guild, title_suffix: str = "") 
             )
             embed.add_field(name="\u200b", value="\u200b", inline=False)
 
-    embed.set_footer(text="Buttons: Join Team 1/2, Backup, Leave • Manager: Lock/Unlock, Promote Squad A/B, Reset • Slash: /event_setteamtime, /event_setcommander, /event_unsetcommander, /event_setteamlabels, /event_setautorefresh")
+    embed.set_footer(text="Buttons: Team 1/2, Backup, Leave • Manager: Lock/Unlock, Promote Squad A/B, Reset • Slash: /event_setteamtime, /event_setcommander, /event_unsetcommander, /event_setteamlabels, /event_setautorefresh")
     return embed
 
 def user_is_event_manager_or_admin(ev: sqlite3.Row, member: discord.Member) -> bool:
@@ -477,12 +503,12 @@ class RosterView(discord.ui.View):
         self.event_name = ev["name"]
         self.teams_count = int(ev["teams"] or 2)
 
-        # Player buttons: show UTC slot in label (buttons can't render <t:...>)
-        t1 = slot_label_utc(team_slot(ev, "A"))
-        self._add_button(f"Join Team 1 {t1}", discord.ButtonStyle.primary, 0, lambda i: self._join_auto(i, "A"))
+        # Player buttons: show event-local and UTC slot in label (24h, no colon)
+        t1 = button_dual_time_label(ev, "A")
+        self._add_button(f"Team 1 {t1}", discord.ButtonStyle.primary, 0, lambda i: self._join_auto(i, "A"))
         if self.teams_count >= 2:
-            t2 = slot_label_utc(team_slot(ev, "B"))
-            self._add_button(f"Join Team 2 {t2}", discord.ButtonStyle.primary, 0, lambda i: self._join_auto(i, "B"))
+            t2 = button_dual_time_label(ev, "B")
+            self._add_button(f"Team 2 {t2}", discord.ButtonStyle.primary, 0, lambda i: self._join_auto(i, "B"))
 
         # Backups + Leave
         self._add_button("Backup (Team 1)", discord.ButtonStyle.secondary, 1, lambda i: self._join_backup(i, "A"))
@@ -691,7 +717,7 @@ async def on_ready():
         print("Startup error:", e)
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
-# ---- Scheduled weekly auto-refresh (kept) ----
+# ---- Scheduled weekly auto-refresh ----
 
 def map_weekday_name(dt: datetime) -> str:
     return ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"][dt.weekday()]
@@ -1050,7 +1076,7 @@ async def export(interaction: discord.Interaction, name: str):
         file = discord.File(fp=io.BytesIO(data), filename=f"{ev['name']}_roster.csv")
     await interaction.response.send_message(content="Export complete.", file=file, ephemeral=True)
 
-# ---- Reset & Time‑role gate (kept) ----
+# ---- Reset & Time‑role gate ----
 
 def reset_event_roster(conn, event_id: int):
     c = conn.cursor()
