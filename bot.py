@@ -211,7 +211,7 @@ def add_participant(conn, ev: sqlite3.Row, user_id: int, team: str, squad: Optio
     Returns (slot_type, note). slot_type in {'main','backup',''}; note may be message.
     """
     if ev["status"] != "open":
-        return ("", "This event is currently locked. Ask a manager to /event unlock.")
+        return ("", "This event is currently locked. Ask a manager to /event_unlock.")
 
     existing = user_enrollment(conn, ev["id"], user_id)
     if existing:
@@ -408,7 +408,7 @@ def roster_embed(ev: sqlite3.Row, guild: discord.Guild, title_suffix: str = "") 
             )
             embed.add_field(name="\u200b", value="\u200b", inline=False)
 
-    embed.set_footer(text="Buttons: Join Squad A/B, Backup, Leave • Manager: Lock/Unlock, Promote Squad A/B, Reset • Slash: /event setteamlabels, /event setteamtime, /event setcommander, /event unsetcommander, /event setautorefresh")
+    embed.set_footer(text="Buttons: Join Squad A/B, Backup, Leave • Manager: Lock/Unlock, Promote Squad A/B, Reset • Slash: /event_setteamlabels, /event_setteamtime, /event_setcommander, /event_unsetcommander, /event_setautorefresh")
     return embed
 
 def user_is_event_manager_or_admin(ev: sqlite3.Row, member: discord.Member) -> bool:
@@ -430,26 +430,32 @@ class RosterView(discord.ui.View):
         self.team1_label = team_label(ev, "A")
         self.team2_label = team_label(ev, "B")
 
-        # Player buttons (row 0)
+        # -------- Player buttons --------
+        # Row 0: Join buttons (max 4)
         self._add_button(f"Join {self.team1_label} — Squad A", discord.ButtonStyle.primary, 0, lambda i: self._join_common(i, "A", "SA", False))
         self._add_button(f"Join {self.team1_label} — Squad B", discord.ButtonStyle.primary, 0, lambda i: self._join_common(i, "A", "SB", False))
         if self.teams_count >= 2:
             self._add_button(f"Join {self.team2_label} — Squad A", discord.ButtonStyle.primary, 0, lambda i: self._join_common(i, "B", "SA", False))
             self._add_button(f"Join {self.team2_label} — Squad B", discord.ButtonStyle.primary, 0, lambda i: self._join_common(i, "B", "SB", False))
-        self._add_button("Backup (Team 1)", discord.ButtonStyle.secondary, 0, lambda i: self._join_common(i, "A", None, True))
-        if self.teams_count >= 2:
-            self._add_button("Backup (Team 2)", discord.ButtonStyle.secondary, 0, lambda i: self._join_common(i, "B", None, True))
-        self._add_button("Leave", discord.ButtonStyle.danger, 0, self._leave_common)
 
-        # Manager buttons (row 1)
-        self._add_button("Lock", discord.ButtonStyle.secondary, 1, self._mgr_lock)
-        self._add_button("Unlock", discord.ButtonStyle.secondary, 1, self._mgr_unlock)
-        self._add_button(f"Promote {self.team1_label} — Squad A", discord.ButtonStyle.success, 1, lambda i: self._mgr_promote(i, "A", "SA"))
-        self._add_button(f"Promote {self.team1_label} — Squad B", discord.ButtonStyle.success, 1, lambda i: self._mgr_promote(i, "A", "SB"))
+        # Row 1: Backup + Leave (<=3)
+        self._add_button("Backup (Team 1)", discord.ButtonStyle.secondary, 1, lambda i: self._join_common(i, "A", None, True))
         if self.teams_count >= 2:
-            self._add_button(f"Promote {self.team2_label} — Squad A", discord.ButtonStyle.success, 1, lambda i: self._mgr_promote(i, "B", "SA"))
-            self._add_button(f"Promote {self.team2_label} — Squad B", discord.ButtonStyle.success, 1, lambda i: self._mgr_promote(i, "B", "SB"))
-        self._add_button("Reset", discord.ButtonStyle.danger, 1, self._mgr_reset)
+            self._add_button("Backup (Team 2)", discord.ButtonStyle.secondary, 1, lambda i: self._join_common(i, "B", None, True))
+        self._add_button("Leave", discord.ButtonStyle.danger, 1, self._leave_common)
+
+        # -------- Manager buttons --------
+        # Row 2: Lock/Unlock + Promote Team 1 (<=4)
+        self._add_button("Lock", discord.ButtonStyle.secondary, 2, self._mgr_lock)
+        self._add_button("Unlock", discord.ButtonStyle.secondary, 2, self._mgr_unlock)
+        self._add_button(f"Promote {self.team1_label} — Squad A", discord.ButtonStyle.success, 2, lambda i: self._mgr_promote(i, "A", "SA"))
+        self._add_button(f"Promote {self.team1_label} — Squad B", discord.ButtonStyle.success, 2, lambda i: self._mgr_promote(i, "A", "SB"))
+
+        # Row 3: Promote Team 2 + Reset (<=3)
+        if self.teams_count >= 2:
+            self._add_button(f"Promote {self.team2_label} — Squad A", discord.ButtonStyle.success, 3, lambda i: self._mgr_promote(i, "B", "SA"))
+            self._add_button(f"Promote {self.team2_label} — Squad B", discord.ButtonStyle.success, 3, lambda i: self._mgr_promote(i, "B", "SB"))
+        self._add_button("Reset", discord.ButtonStyle.danger, 3, self._mgr_reset)
 
     def _add_button(self, label: str, style: discord.ButtonStyle, row: int, handler):
         btn = discord.ui.Button(label=label, style=style, row=row)
@@ -697,11 +703,14 @@ async def event_create(
     teams: int = 2,
     channel: Optional[discord.TextChannel] = None
 ):
+    # Defer to avoid timeouts while we create DB rows and the roster message
+    await interaction.response.defer(ephemeral=True)
+
     if teams < 1 or teams > 2:
-        await interaction.response.send_message("For now, teams must be 1 or 2.", ephemeral=True)
+        await interaction.followup.send("For now, teams must be 1 or 2.", ephemeral=True)
         return
     if squad_a_size < 0 or squad_b_size < 0 or backup_size < 0:
-        await interaction.response.send_message("Sizes cannot be negative.", ephemeral=True)
+        await interaction.followup.send("Sizes cannot be negative.", ephemeral=True)
         return
     total_team_size = squad_a_size + squad_b_size
     with db() as conn:
@@ -720,20 +729,30 @@ async def event_create(
             event_id = c.lastrowid
             c.execute("INSERT INTO managers(event_id, user_id) VALUES (?,?)", (event_id, interaction.user.id))
         except sqlite3.IntegrityError:
-            await interaction.response.send_message("An event with that name already exists here.", ephemeral=True)
+            await interaction.followup.send("An event with that name already exists here.", ephemeral=True)
             return
 
     if channel:
         with db() as conn:
             ev = get_event(conn, interaction.guild_id, name)
-        await ensure_roster_message(ev, interaction.guild)
-        await interaction.response.send_message(
+        try:
+            await ensure_roster_message(ev, interaction.guild)
+        except Exception as e:
+            print("ensure_roster_message error:", e)
+            await interaction.followup.send(
+                "Event created, but failed to post the live roster message. "
+                "Please check the bot’s permissions in the target channel (Send Messages, Embed Links).",
+                ephemeral=True
+            )
+            return
+
+        await interaction.followup.send(
             f"Event **{name}** created. Live roster posted in {channel.mention}.",
             ephemeral=True
         )
     else:
-        await interaction.response.send_message(
-            f"Event **{name}** created. Use `/event setchannel` to choose a display channel.",
+        await interaction.followup.send(
+            f"Event **{name}** created. Use `/event_setchannel` to choose a display channel.",
             ephemeral=True
         )
 
