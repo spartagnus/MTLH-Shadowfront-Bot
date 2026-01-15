@@ -1271,4 +1271,32 @@ async def event_setautorefresh(
         ephemeral=True
     )
 
+@tree.command(description="Delete ALL events for this server (manager/admin only).")
+async def event_deleteall(interaction: discord.Interaction):
+    with db() as conn:
+        # Check permissions
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("You must have Manage Server to delete all events.", ephemeral=True)
+            return
+
+        # Fetch all events for this guild
+        c = conn.cursor()
+        c.execute("SELECT display_channel_id, display_message_id FROM events WHERE guild_id=?", (interaction.guild_id,))
+        rows = c.fetchall()
+
+        # Try to delete roster messages
+        for row in rows:
+            if row["display_channel_id"] and row["display_message_id"]:
+                channel = interaction.guild.get_channel(row["display_channel_id"])
+                if channel:
+                    try:
+                        msg = await channel.fetch_message(row["display_message_id"])
+                        await msg.delete()
+                    except:
+                        pass
+
+        # Delete all events
+        c.execute("DELETE FROM events WHERE guild_id=?", (interaction.guild_id,))
+    await interaction.response.send_message("✅ All events have been deleted for this server.", ephemeral=True)
+
 bot.run(TOKEN)
