@@ -827,34 +827,6 @@ async def deleteall(interaction: discord.Interaction):
         conn.execute("DELETE FROM events WHERE guild_id=?", (interaction.guild_id,))
     await interaction.response.send_message("✅ All events deleted for this server.", ephemeral=True)
 
-# ----- Global sync helpers -----
-@tree.command(description="Sync (publish) the current command set globally (admin only).")
-async def sync(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.manage_guild:
-        await interaction.response.send_message("You must have Manage Server.", ephemeral=True); return
-    try:
-        synced = await tree.sync()  # global publish
-        await interaction.response.send_message(
-            f"🌍 Published **{len(synced)}** command(s) globally. It may take a few minutes to appear.",
-            ephemeral=True
-        )
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Global sync failed: `{e}`", ephemeral=True)
-
-@tree.command(description="Full re-sync globally: clear then republish (admin only).")
-async def sync_full(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.manage_guild:
-        await interaction.response.send_message("You must have Manage Server.", ephemeral=True); return
-    try:
-        await tree.clear_commands()   # clear local cache (global scope)
-        synced = await tree.sync()    # republish
-        await interaction.response.send_message(
-            f"🌍 Full global re-sync complete: **{len(synced)}** command(s).",
-            ephemeral=True
-        )
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Full global re-sync failed: `{e}`", ephemeral=True)
-
 @tree.command(description="(Manager) Add a member to Team 1 or Team 2 (optional squad or backup).")
 @app_commands.describe(
     user="Member to add",
