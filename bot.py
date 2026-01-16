@@ -640,8 +640,7 @@ async def reminders_task():
                 label = team_label(ev, team)
                 when = f"<t:{event_epoch}:F> (<t:{event_epoch}:R>)"
                 mentions = " ".join(g.get_member(uid).mention if g.get_member(uid) else f"<@{uid}>" for uid in members)
-                content = f"⏰ Reminder: **{label}** starts {when}.
-{mentions}"
+                content = f"⏰ Reminder: **{label}** starts {when}.{mentions}"
                 try:
                     await channel.send(content)
                     conn.execute(f"UPDATE events SET {last_key}=? WHERE id=?", (rem_epoch, ev["id"]))
