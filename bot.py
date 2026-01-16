@@ -50,7 +50,6 @@ def db():
     finally:
         conn.close()
 
-
 def init_db():
     with db() as conn:
         c = conn.cursor()
@@ -131,7 +130,6 @@ def init_db():
         );
         """)
 
-
 def ensure_fixed_event(conn: sqlite3.Connection, guild_id: int, creator_id: int) -> sqlite3.Row:
     """Create or fetch the single 'Shadowfront' event for this guild."""
     c = conn.cursor()
@@ -163,7 +161,6 @@ def ensure_fixed_event(conn: sqlite3.Connection, guild_id: int, creator_id: int)
     c.execute("INSERT INTO managers(event_id, user_id) VALUES (?,?)", (event_id, creator_id))
     c.execute("SELECT * FROM events WHERE id=?", (event_id,))
     return c.fetchone()
-
 
 def get_fixed_event(conn: sqlite3.Connection, guild_id: int) -> Optional[sqlite3.Row]:
     c = conn.cursor()
@@ -325,7 +322,6 @@ def add_participant(conn, ev: sqlite3.Row, user_id: int, team: str, squad: Optio
         return ("backup", "joined")
     return ("", f"{team_label(ev, team)} is full (mains and backups).")
 
-
 def promote_one_non_commander(conn, ev: sqlite3.Row, team: str, squad: str) -> Optional[int]:
     # Used when a main leaves to auto-promote from backups
     current_mains = count_mains(conn, ev["id"], team, squad, non_commanders_only=True)
@@ -350,7 +346,6 @@ def promote_one_non_commander(conn, ev: sqlite3.Row, team: str, squad: str) -> O
     )
     return uid
 
-
 def get_roster(conn, event_id: int, team: str):
     c = conn.cursor()
     # SA commanders + mains
@@ -367,7 +362,6 @@ def get_roster(conn, event_id: int, team: str):
     c.execute("SELECT user_id FROM rosters WHERE event_id=? AND team=? AND slot_type='backup' ORDER BY joined_at ASC", (event_id, team))
     backups = [r[0] for r in c.fetchall()]
     return commanders_sa, mains_sa, commanders_sb, mains_sb, backups
-
 
 def user_is_event_manager_or_admin(ev: sqlite3.Row, member: discord.Member) -> bool:
     if member.guild_permissions.manage_guild:
@@ -389,8 +383,7 @@ def roster_embed(ev: sqlite3.Row, guild: discord.Guild) -> discord.Embed:
 
             def mentions(uids: List[int]) -> str:
                 names = [guild.get_member(uid).mention if guild.get_member(uid) else f"<@{uid}>" for uid in uids]
-                return "
-".join(names) if names else "*None*"
+                return "\n".join(names) if names else "*None*"
 
             embed.add_field(
                 name=f"{label} — Squad A — Commanders ({len(commanders_sa)}/{ev['squad_a_commander_quota']})",
@@ -400,7 +393,7 @@ def roster_embed(ev: sqlite3.Row, guild: discord.Guild) -> discord.Embed:
                 name=f"{label} — Squad A — Mains ({len(mains_sa)}/{non_commander_cap(ev, 'SA')})",
                 value=mentions(mains_sa), inline=True
             )
-            embed.add_field(name="​", value="​", inline=False)
+            embed.add_field(name="\u200b", value="\u200b", inline=False)
             if event_squads(ev) >= 2:
                 embed.add_field(
                     name=f"{label} — Squad B — Commanders ({len(commanders_sb)}/{ev['squad_b_commander_quota']})",
@@ -410,12 +403,12 @@ def roster_embed(ev: sqlite3.Row, guild: discord.Guild) -> discord.Embed:
                     name=f"{label} — Squad B — Mains ({len(mains_sb)}/{non_commander_cap(ev, 'SB')})",
                     value=mentions(mains_sb), inline=True
                 )
-                embed.add_field(name="​", value="​", inline=False)
+                embed.add_field(name="\u200b", value="\u200b", inline=False)
             embed.add_field(
                 name=f"{label} — Backups ({len(backups)}/{ev['backup_size']})",
                 value=mentions(backups), inline=False
             )
-            embed.add_field(name="​", value="​", inline=False)
+            embed.add_field(name="\u200b", value="\u200b", inline=False)
     return embed
 
 # ---------- Buttons (reduced UI) ----------
@@ -626,8 +619,7 @@ async def reminders_task():
                 label = team_label(ev, team)
                 when = f"<t:{event_epoch}:F> (<t:{event_epoch}:R>)"
                 mentions = " ".join(g.get_member(uid).mention if g.get_member(uid) else f"<@{uid}>" for uid in members)
-                content = f"⏰ Reminder: **{label}** starts {when}.
-{mentions}"
+                content = f"⏰ Reminder: **{label}** starts {when}.\n{mentions}"
                 try:
                     await channel.send(content)
                     conn.execute(f"UPDATE events SET {last_key}=? WHERE id=?", (rem_epoch, ev["id"]))
@@ -935,8 +927,7 @@ async def addmember(
     with db() as conn:
         ev = get_fixed_event(conn, interaction.guild_id) or ensure_fixed_event(conn, interaction.guild_id, interaction.user.id)
         if not user_is_event_manager_or_admin(ev, interaction.user):
-            await interaction.response.send_message("You must be an event manager or have **Manage Server**.", ephemeral=True)
-            return
+            await interaction.response.send_message("You must be an event manager or have **Manage Server**.", ephemeral=True); return
         existing = user_enrollment(conn, ev["id"], user.id)
         if existing:
             if existing["team"] == team:
@@ -948,15 +939,13 @@ async def addmember(
                 await interaction.response.send_message(
                     f"{user.mention} is already on **{loc}**.",
                     ephemeral=True
-                )
-                return
+                ); return
             else:
                 await interaction.response.send_message(
                     f"{user.mention} is already registered on **{team_label(ev, existing['team'])}**. "
                     f"Ask them to `/leave` first (or remove them) before re-adding.",
                     ephemeral=True
-                )
-                return
+                ); return
         requested_squad = squad if squad in ("SA", "SB") else None
         slot_type, note = add_participant(
             conn,
@@ -967,8 +956,7 @@ async def addmember(
             force_backup=as_backup
         )
         if not slot_type:
-            await interaction.response.send_message(note, ephemeral=True)
-            return
+            await interaction.response.send_message(note, ephemeral=True); return
     await refresh_roster_message(interaction.guild)
     if slot_type == "backup":
         await interaction.response.send_message(
@@ -990,15 +978,12 @@ async def removemember(interaction: discord.Interaction, user: discord.Member):
     with db() as conn:
         ev = get_fixed_event(conn, interaction.guild_id)
         if not ev:
-            await interaction.response.send_message("Event not found.", ephemeral=True)
-            return
+            await interaction.response.send_message("Event not found.", ephemeral=True); return
         if not user_is_event_manager_or_admin(ev, interaction.user):
-            await interaction.response.send_message("You must be an event manager or have **Manage Server**.", ephemeral=True)
-            return
+            await interaction.response.send_message("You must be an event manager or have **Manage Server**.", ephemeral=True); return
         existing = user_enrollment(conn, ev["id"], user.id)
         if not existing:
-            await interaction.response.send_message(f"{user.mention} is not registered for **{team_label(ev, 'A')}** or **{team_label(ev, 'B')}**.", ephemeral=True)
-            return
+            await interaction.response.send_message(f"{user.mention} is not registered for **{team_label(ev, 'A')}** or **{team_label(ev, 'B')}**.", ephemeral=True); return
         promoted_user_id = None
         c = conn.cursor()
         c.execute("DELETE FROM rosters WHERE event_id=? AND user_id=?", (ev["id"], user.id))
@@ -1151,13 +1136,11 @@ async def help(interaction: discord.Interaction):
     cur = 0
     for ln in lines:
         if cur + len(ln) + 1 > 1024:
-            embed.add_field(name="Commands", value="
-".join(chunk), inline=False)
+            embed.add_field(name="Commands", value="\n".join(chunk), inline=False)
             chunk, cur = [], 0
         chunk.append(ln); cur += len(ln) + 1
     if chunk:
-        embed.add_field(name="Commands", value="
-".join(chunk), inline=False)
+        embed.add_field(name="Commands", value="\n".join(chunk), inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # --------------- Run ---------------
