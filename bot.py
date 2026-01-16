@@ -205,7 +205,7 @@ def local_hhmm_no_colon(ev: sqlite3.Row, slot: Optional[str]) -> str:
 
 def button_dual_time_label(ev: sqlite3.Row, team: str) -> str:
     slot = ev["team_a_slot"] if team == "A" else ev["team_b_slot"]
-    return f"(L {local_hhmm_no_colon(ev, slot)} UTC {slot if slot else '----'})"
+    return f"(UTC {slot if slot else '----'})"
 
 # ---------- Roster logic ----------
 def team_label(ev: sqlite3.Row, team: str) -> str:
