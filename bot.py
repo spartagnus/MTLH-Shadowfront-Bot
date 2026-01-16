@@ -542,7 +542,103 @@ async def setteamtime(interaction: discord.Interaction, team: app_commands.Trans
     await refresh_roster_message(interaction.guild)
     await interaction.response.send_message(f"Set **{team_label(ev, team)}** time to **{slot} UTC**.", ephemeral=True)
 
-:
+
+@tree.command(description="Configure weekly auto-refresh for the roster (manager only).")
+async def setautorefresh(interaction: discord.Interaction, enable: bool = True, day: str = "MON", hour: int = 9, tz: str = "Australia/Brisbane"):
+    day = day.upper()
+    if day not in {"MON","TUE","WED","THU","FRI","SAT","SUN"}:
+        await interaction.response.send_message("Invalid day. Use MON..SUN.", ephemeral=True); return
+    if hour < 0 or hour > 23:
+        await interaction.response.send_message("Invalid hour. Use 0-23.", ephemeral=True); return
+
+    with db() as conn:
+        ev = get_fixed_event(conn, interaction.guild_id) or ensure_fixed_event(conn, interaction.guild_id, interaction.user.id)
+        if not user_is_event_manager_or_admin(ev, interaction.user):
+            await interaction.response.send_message("You must be an event manager or have Manage Server.", ephemeral=True); return
+        if ZoneInfo:
+            try: _ = ZoneInfo(tz)
+            except Exception:
+                await interaction.response.send_message("Invalid timezone. Provide a valid IANA timezone.", ephemeral=True); return
+        conn.execute("""
+            UPDATE events SET auto_refresh_enabled=?, auto_refresh_day=?, auto_refresh_hour=?, auto_refresh_tz=? WHERE id=?
+        """, (1 if enable else 0, day, hour, tz, ev["id"]))
+    await interaction.response.send_message(f"Auto-refresh {'enabled' if enable else 'disabled'}: {day} @ {hour:02d}:00 ({tz}).", ephemeral=True)
+
+# ----- Manager actions (no UI buttons) -----
+@tree.command(description="Lock Shadowfront to stop new signups (manager only).")
+async def lock(interaction: discord.Interaction):
+    with db() as conn:
+        ev = get_fixed_event(conn, interaction.guild_id)
+        if not ev: await interaction.response.send_message("Event not found.", ephemeral=True); return
+        if not user_is_event_manager_or_admin(ev, interaction.user):
+            await interaction.response.send_message("You must be an event manager or have Manage Server.", ephemeral=True); return
+        conn.execute("UPDATE events SET status='locked' WHERE id=?", (ev["id"],))
+    await refresh_roster_message(interaction.guild)
+    await interaction.response.send_message("Event locked. Roster updated.", ephemeral=True)
+
+@tree.command(description="Unlock Shadowfront to allow signups again (manager only).")
+async def unlock(interaction: discord.Interaction):
+    with db() as conn:
+        ev = get_fixed_event(conn, interaction.guild_id)
+        if not ev: await interaction.response.send_message("Event not found.", ephemeral=True); return
+        if not user_is_event_manager_or_admin(ev, interaction.user):
+            await interaction.response.send_message("You must be an event manager or have Manage Server.", ephemeral=True); return
+        conn.execute("UPDATE events SET status='open' WHERE id=?", (ev["id"],))
+    await refresh_roster_message(interaction.guild)
+    await interaction.response.send_message("Event unlocked. Roster updated.", ephemeral=True)
+
+@tree.command(description="Reset Shadowfront: clears all mains/backups and re-opens signups (manager only).")
+async def reset(interaction: discord.Interaction, clear_message: bool = False):
+    with db() as conn:
+        ev = get_fixed_event(conn, interaction.guild_id)
+        if not ev: await interaction.response.send_message("Event not found.", ephemeral=True); return
+        if not user_is_event_manager_or_admin(ev, interaction.user):
+            await interaction.response.send_message("You must be an event manager or have Manage Server.", ephemeral=True); return
+
+        conn.execute("DELETE FROM rosters WHERE event_id=?", (ev["id"],))
+        conn.execute("UPDATE events SET status='open' WHERE id=?", (ev["id"],))
+
+        if clear_message and ev["display_channel_id"] and ev["display_message_id"]:
+            channel = interaction.guild.get_channel(ev["display_channel_id"])
+            if channel:
+                try:
+                    msg = await channel.fetch_message(ev["display_message_id"])
+                    await msg.delete()
+                except (discord.NotFound, discord.Forbidden):
+                    pass
+            conn.execute("UPDATE events SET display_message_id=NULL WHERE id=?", (ev["id"],))
+
+    await refresh_roster_message(interaction.guild)
+    await interaction.response.send_message("Event reset. Live roster updated.", ephemeral=True)
+
+@tree.command(description="Promote earliest team backup to a squad's main (manager only, non-commander).")
+async def promote(interaction: discord.Interaction, team: app_commands.Transform[str, TeamChoice], squad: app_commands.Transform[str, SquadChoice]):
+    with db() as conn:
+        ev = get_fixed_event(conn, interaction.guild_id)
+        if not ev: await interaction.response.send_message("Event not found.", ephemeral=True); return
+        if not user_is_event_manager_or_admin(ev, interaction.user):
+            await interaction.response.send_message("You must be an event manager or have Manage Server.", ephemeral=True); return
+        uid = promote_one_non_commander(conn, ev, team, squad)
+        if not uid:
+            await interaction.response.send_message(
+                f"No backups to promote or squad mains are at capacity for {team_label(ev, team)} — {'Squad A' if squad=='SA' else 'Squad B'}.",
+                ephemeral=True
+            )
+            return
+    await refresh_roster_message(interaction.guild)
+    member = interaction.guild.get_member(uid)
+    await interaction.response.send_message(
+        f"Promoted {member.mention if member else f'<@{uid}>'} to main (non-commander) on {team_label(ev, team)} — {'Squad A' if squad=='SA' else 'Squad B'}.",
+        ephemeral=True
+    )
+
+@tree.command(description="Assign a commander to a team & squad (manager only).")
+async def setcommander(
+    interaction: discord.Interaction,
+    team: app_commands.Transform[str, TeamChoice],
+    squad: app_commands.Transform[str, SquadChoice],
+    user: discord.Member
+):
     with db() as conn:
         ev = get_fixed_event(conn, interaction.guild_id)
         if not ev: await interaction.response.send_message("Event not found.", ephemeral=True); return
@@ -678,6 +774,60 @@ async def roster(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+@tree.command(description="Delete ALL events for this server (admin only; cannot be undone).")
+async def deleteall(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message("You must have Manage Server.", ephemeral=True); return
+    with db() as conn:
+        rows = conn.execute("SELECT display_channel_id, display_message_id FROM events WHERE guild_id=?", (interaction.guild_id,)).fetchall()
+        for row in rows:
+            ch_id, msg_id = row["display_channel_id"], row["display_message_id"]
+            if ch_id and msg_id:
+                channel = interaction.guild.get_channel(ch_id)
+                if channel:
+                    try:
+                        msg = await channel.fetch_message(msg_id)
+                        await msg.delete()
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        pass
+        conn.execute("DELETE FROM events WHERE guild_id=?", (interaction.guild_id,))
+    await interaction.response.send_message("✅ All events deleted for this server.", ephemeral=True)
+
+# ----- Global sync helpers -----
+@tree.command(description="Sync (publish) the current command set globally (admin only).")
+async def sync(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message("You must have Manage Server.", ephemeral=True); return
+    try:
+        synced = await tree.sync()  # global publish
+        await interaction.response.send_message(
+            f"🌍 Published **{len(synced)}** command(s) globally. It may take a few minutes to appear.",
+            ephemeral=True
+        )
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Global sync failed: `{e}`", ephemeral=True)
+
+@tree.command(description="Full re-sync globally: clear then republish (admin only).")
+async def sync_full(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message("You must have Manage Server.", ephemeral=True); return
+    try:
+        await tree.clear_commands()   # clear local cache (global scope)
+        synced = await tree.sync()    # republish
+        await interaction.response.send_message(
+            f"🌍 Full global re-sync complete: **{len(synced)}** command(s).",
+            ephemeral=True
+        )
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Full global re-sync failed: `{e}`", ephemeral=True)
+
+@tree.command(description="(Manager) Add a member to Team 1 or Team 2 (optional squad or backup).")
+@app_commands.describe(
+    user="Member to add",
+    team="A or B (A = Team 1, B = Team 2)",
+    squad="Optional: A or B to target a specific squad; leave empty for auto",
+    as_backup="If true, add the member to the backups list for that team"
+)
 async def addmember(
     interaction: discord.Interaction,
     user: discord.Member,
