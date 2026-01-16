@@ -996,42 +996,6 @@ async def removemember(interaction: discord.Interaction, user: discord.Member):
         msg += f" Promoted {member.mention if member else f'<@{promoted_user_id}>'} to **main**."
     await interaction.response.send_message(msg, ephemeral=True)
 
-# ---- Admin ----
-@tree.command(description="Purge this server's guild-scoped commands (admin only).")
-async def purge_guild(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.manage_guild:
-        await interaction.response.send_message("You must have Manage Server.", ephemeral=True); return
-    try:
-        await tree.clear_commands(guild=interaction.guild)
-        await tree.sync(guild=interaction.guild)  # push empty set to guild scope
-        await interaction.response.send_message(
-            "🧹 Purged guild-scoped commands for this server. Global commands remain.",
-            ephemeral=True
-        )
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Purge failed: `{e}`", ephemeral=True)
-
-@tree.command(description="Sync (publish) the current command set globally (admin only).")
-async def sync(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.manage_guild:
-        await interaction.response.send_message("You must have Manage Server.", ephemeral=True); return
-    try:
-        synced = await tree.sync()
-        await interaction.response.send_message(f"🌍 Published **{len(synced)}** command(s) globally.", ephemeral=True)
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Global sync failed: `{e}`", ephemeral=True)
-
-@tree.command(description="Full re-sync globally: clear then republish (admin only).")
-async def sync_full(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.manage_guild:
-        await interaction.response.send_message("You must have Manage Server.", ephemeral=True); return
-    try:
-        await tree.clear_commands(guild=None)
-        synced = await tree.sync()
-        await interaction.response.send_message(f"🌍 Full global re-sync complete: **{len(synced)}** command(s).", ephemeral=True)
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Full global re-sync failed: `{e}`", ephemeral=True)
-
 # ---- Utility ----
 @tree.command(description="Set number of teams (1 or 2).")
 async def setteams(interaction: discord.Interaction, count: app_commands.Range[int, 1, 2]):
