@@ -46,6 +46,11 @@ def db():
 def init_db():
     with db() as conn:
         c = conn.cursor()
+        # Backfill new columns for older DBs
+        try:
+            c.execute("ALTER TABLE events ADD COLUMN squads INTEGER NOT NULL DEFAULT 2")
+        except Exception:
+            pass
         c.execute("""
         CREATE TABLE IF NOT EXISTS events(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -203,6 +208,14 @@ def local_hhmm_no_colon(ev: sqlite3.Row, slot: Optional[str]) -> str:
     dt = datetime.fromtimestamp(epoch, tz=event_tz(ev))
     return dt.strftime("%H%M")
 
+
+# Number of squads configured for this event (1 or 2, default 2)
+def event_squads(ev: sqlite3.Row) -> int:
+    try:
+        return int(ev["squads"]) if ev["squads"] is not None else 2
+    except Exception:
+        return 2
+
 def button_dual_time_label(ev: sqlite3.Row, team: str) -> str:
     slot = ev["team_a_slot"] if team == "A" else ev["team_b_slot"]
     return f"(L {local_hhmm_no_colon(ev, slot)} UTC {slot if slot else '----'})"
@@ -214,6 +227,9 @@ def team_label(ev: sqlite3.Row, team: str) -> str:
 def add_participant(conn, ev: sqlite3.Row, user_id: int, team: str, squad: Optional[str] = None, force_backup: bool = False) -> Tuple[str, str]:
     if ev["status"] != "open":
         return ("", "This event is currently locked.")
+    # Validate requested squad against configured number of squads
+    if squad == "SB" and event_squads(ev) < 2:
+        return ("", "Only Squad A is configured for this event.")
     existing = user_enrollment(conn, ev["id"], user_id)
     if existing:
         if existing["team"] == team:
@@ -242,7 +258,7 @@ def add_participant(conn, ev: sqlite3.Row, user_id: int, team: str, squad: Optio
         c.execute("INSERT INTO rosters(event_id,user_id,team,squad,slot_type,is_commander,joined_at) VALUES (?,?,?,?,?,?,?)",
                   (ev["id"], user_id, team, "SA", "main", 0, int(time.time())))
         return ("main", "joined")
-    if can_join_non_cmd("SB"):
+    if event_squads(ev) >= 2 and can_join_non_cmd("SB"):
         c.execute("INSERT INTO rosters(event_id,user_id,team,squad,slot_type,is_commander,joined_at) VALUES (?,?,?,?,?,?,?)",
                   (ev["id"], user_id, team, "SB", "main", 0, int(time.time())))
         return ("main", "joined")
@@ -508,7 +524,12 @@ class TeamChoice(app_commands.Transformer):
 class SquadChoice(app_commands.Transformer):
     async def transform(self, interaction: discord.Interaction, value: str) -> str:
         v = value.upper()
-        if v not in ("A","B"): raise app_commands.AppCommandError("Squad must be A or B.")
+        if v not in ("A","B"):
+            raise app_commands.AppCommandError("Squad must be A or B.")
+        with db() as conn:
+            ev = get_fixed_event(conn, interaction.guild_id)
+        if v == "B" and (not ev or event_squads(ev) < 2):
+            raise app_commands.AppCommandError("Only Squad A is configured for this event.")
         return "SA" if v == "A" else "SB"
 
 # ----- Config/admin (no event name args) -----
@@ -542,7 +563,34 @@ async def setteamtime(interaction: discord.Interaction, team: app_commands.Trans
     await refresh_roster_message(interaction.guild)
     await interaction.response.send_message(f"Set **{team_label(ev, team)}** time to **{slot} UTC**.", ephemeral=True)
 
+@tree.command(description="Set the display labels for Team 1 (A) and Team 2 (B).")
+async def setteamlabels(interaction: discord.Interaction, team1_label: str, team2_label: str):
+    with db() as conn:
+        ev = get_fixed_event(conn, interaction.guild_id) or ensure_fixed_event(conn, interaction.guild_id, interaction.user.id)
+        if not user_is_event_manager_or_admin(ev, interaction.user):
+            await interaction.response.send_message("You must be an event manager or have Manage Server.", ephemeral=True); return
+        conn.execute("UPDATE events SET team_a_label=?, team_b_label=? WHERE id=?", (team1_label.strip(), team2_label.strip(), ev["id"]))
+    await refresh_roster_message(interaction.guild)
+    await interaction.response.send_message(f"Updated team labels. Live roster updated.", ephemeral=True)
 
+
+@tree.command(description="Set number of teams (1 or 2).")
+async def setteams(interaction: discord.Interaction, count: app_commands.Range[int, 1, 2]):
+    with db() as conn:
+        ev = get_fixed_event(conn, interaction.guild_id) or ensure_fixed_event(conn, interaction.guild_id, interaction.user.id)
+        if not user_is_event_manager_or_admin(ev, interaction.user):
+            await interaction.response.send_message("You must be an event manager or have Manage Server.", ephemeral=True); return
+        current = int(ev["teams"] or 2)
+        if count == current:
+            await interaction.response.send_message(f"Teams already set to {count}.", ephemeral=True); return
+        if count == 1:
+            c = conn.cursor()
+            total_b = c.execute("SELECT COUNT(*) FROM rosters WHERE event_id=? AND team='B'", (ev["id"],)).fetchone()[0]
+            if total_b > 0:
+                await interaction.response.send_message(f"Cannot set to 1 team: Team 2 currently has {total_b} member(s). Remove or move them first.", ephemeral=True); return
+        conn.execute("UPDATE events SET teams=? WHERE id=?", (count, ev["id"]))
+    await refresh_roster_message(interaction.guild)
+    await interaction.response.send_message(f"Set number of teams to **{count}**.", ephemeral=True)
 @tree.command(description="Configure weekly auto-refresh for the roster (manager only).")
 async def setautorefresh(interaction: discord.Interaction, enable: bool = True, day: str = "MON", hour: int = 9, tz: str = "Australia/Brisbane"):
     day = day.upper()
@@ -565,6 +613,69 @@ async def setautorefresh(interaction: discord.Interaction, enable: bool = True, 
     await interaction.response.send_message(f"Auto-refresh {'enabled' if enable else 'disabled'}: {day} @ {hour:02d}:00 ({tz}).", ephemeral=True)
 
 # ----- Manager actions (no UI buttons) -----
+
+@tree.command(description="Configure squads per team and quotas (enforces ≤3 commanders and team size = 20).")
+@app_commands.describe(
+    squads="Number of squads per team (1 or 2)",
+    squad_a_size="Squad A total size (including commanders)",
+    squad_a_commander_quota="Max commanders in Squad A",
+    squad_b_size="Squad B total size (including commanders; required if squads=2)",
+    squad_b_commander_quota="Max commanders in Squad B (required if squads=2)"
+)
+async def setsquads(
+    interaction: discord.Interaction,
+    squads: app_commands.Range[int,1,2],
+    squad_a_size: app_commands.Range[int,0,20],
+    squad_a_commander_quota: app_commands.Range[int,0,3],
+    squad_b_size: Optional[app_commands.Range[int,0,20]] = None,
+    squad_b_commander_quota: Optional[app_commands.Range[int,0,3]] = None
+):
+    with db() as conn:
+        ev = get_fixed_event(conn, interaction.guild_id) or ensure_fixed_event(conn, interaction.guild_id, interaction.user.id)
+        if not user_is_event_manager_or_admin(ev, interaction.user):
+            await interaction.response.send_message("You must be an event manager or have Manage Server.", ephemeral=True); return
+        TEAM_CAP = 20
+        CMD_CAP = 3
+        if squads == 1:
+            if squad_b_size is not None or squad_b_commander_quota is not None:
+                await interaction.response.send_message("For 1 squad, do not provide Squad B values.", ephemeral=True); return
+            if squad_a_size != TEAM_CAP:
+                await interaction.response.send_message(f"For 1 squad, Squad A size must equal {TEAM_CAP}.", ephemeral=True); return
+            if squad_a_commander_quota > CMD_CAP:
+                await interaction.response.send_message(f"Commander quota cannot exceed {CMD_CAP}.", ephemeral=True); return
+        else:
+            if squad_b_size is None or squad_b_commander_quota is None:
+                await interaction.response.send_message("For 2 squads, provide Squad B size and commander quota.", ephemeral=True); return
+            if squad_a_size + squad_b_size != TEAM_CAP:
+                await interaction.response.send_message(f"Squad A size + Squad B size must equal {TEAM_CAP}.", ephemeral=True); return
+            if squad_a_commander_quota + squad_b_commander_quota > CMD_CAP:
+                await interaction.response.send_message(f"Total commanders across squads cannot exceed {CMD_CAP}.", ephemeral=True); return
+            if squad_a_commander_quota > squad_a_size or squad_b_commander_quota > squad_b_size:
+                await interaction.response.send_message("Commander quota cannot exceed its squad size.", ephemeral=True); return
+        c = conn.cursor()
+        if squads == 1:
+            mains_sb = c.execute("SELECT COUNT(*) FROM rosters WHERE event_id=? AND slot_type='main' AND squad='SB'", (ev["id"],)).fetchone()[0]
+            if mains_sb > 0:
+                await interaction.response.send_message(f"Cannot set to 1 squad: there are {mains_sb} main(s) in Squad B. Move or remove them first.", ephemeral=True); return
+        def squad_usage(team_code: str, sq: str):
+            cmd = c.execute("SELECT COUNT(*) FROM rosters WHERE event_id=? AND team=? AND slot_type='main' AND squad=? AND is_commander=1", (ev["id"], team_code, sq)).fetchone()[0]
+            non = c.execute("SELECT COUNT(*) FROM rosters WHERE event_id=? AND team=? AND slot_type='main' AND squad=? AND is_commander=0", (ev["id"], team_code, sq)).fetchone()[0]
+            return cmd, non
+        for team_code in ['A','B'][:int(ev['teams'] or 2)]:
+            cmd_a, non_a = squad_usage(team_code, 'SA')
+            if cmd_a > squad_a_commander_quota or (cmd_a + non_a) > squad_a_size:
+                await interaction.response.send_message(f"Team {team_code} — Squad A currently has {cmd_a} cmd / {non_a} mains which exceeds proposed limits.", ephemeral=True); return
+            if squads == 2:
+                cmd_b, non_b = squad_usage(team_code, 'SB')
+                if cmd_b > (squad_b_commander_quota or 0) or (cmd_b + non_b) > (squad_b_size or 0):
+                    await interaction.response.send_message(f"Team {team_code} — Squad B currently has {cmd_b} cmd / {non_b} mains which exceeds proposed limits.", ephemeral=True); return
+        conn.execute("UPDATE events SET squads=?, squad_a_size=?, squad_b_size=?, squad_a_commander_quota=?, squad_b_commander_quota=? WHERE id=?",
+                     (squads, squad_a_size, (squad_b_size or 0), squad_a_commander_quota, (squad_b_commander_quota or 0), ev["id"]))
+    await refresh_roster_message(interaction.guild)
+    if squads == 1:
+        await interaction.response.send_message(f"Configured **1 squad** per team — Squad A size {squad_a_size}, commanders {squad_a_commander_quota} (total commanders ≤ 3, team size = 20).", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"Configured **2 squads** per team — SA size {squad_a_size} (cmd {squad_a_commander_quota}), SB size {squad_b_size} (cmd {squad_b_commander_quota}); totals respect ≤3 commanders and team size = 20.", ephemeral=True)
 @tree.command(description="Lock Shadowfront to stop new signups (manager only).")
 async def lock(interaction: discord.Interaction):
     with db() as conn:
@@ -773,6 +884,31 @@ async def roster(interaction: discord.Interaction):
     await refresh_roster_message(interaction.guild)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+@tree.command(description="Export roster as CSV (manager only).")
+async def export(interaction: discord.Interaction):
+    with db() as conn:
+        ev = get_fixed_event(conn, interaction.guild_id)
+        if not ev:
+            await interaction.response.send_message("Event not found.", ephemeral=True); return
+        if not user_is_event_manager_or_admin(ev, interaction.user):
+            await interaction.response.send_message("You must be an event manager or have Manage Server.", ephemeral=True); return
+        lines = ["team_label,team_code,squad,slot_type,is_commander,user_id,mention"]
+        for code in ["A", "B"][:ev["teams"]]:
+            label = team_label(ev, code)
+            commanders_sa, mains_sa, commanders_sb, mains_sb, backups = get_roster(conn, ev["id"], code)
+            for uid in commanders_sa:
+                lines.append(f"{label},{code},SA,main,1,{uid},@{uid}")
+            for uid in mains_sa:
+                lines.append(f"{label},{code},SA,main,0,{uid},@{uid}")
+            for uid in commanders_sb:
+                lines.append(f"{label},{code},SB,main,1,{uid},@{uid}")
+            for uid in mains_sb:
+                lines.append(f"{label},{code},SB,main,0,{uid},@{uid}")
+            for uid in backups:
+                lines.append(f"{label},{code},,backup,0,{uid},@{uid}")
+        data = "\n".join(lines).encode("utf-8")
+        file = discord.File(fp=io.BytesIO(data), filename=f"{FIXED_EVENT_NAME}_roster.csv")
+    await interaction.response.send_message(content="Export complete.", file=file, ephemeral=True)
 
 @tree.command(description="Delete ALL events for this server (admin only; cannot be undone).")
 async def deleteall(interaction: discord.Interaction):
