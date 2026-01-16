@@ -386,8 +386,7 @@ async def resolve_mentions(guild: discord.Guild, uids: list[int]) -> str:
             except (discord.NotFound, discord.Forbidden):
                 m = None
         lines.append(m.mention if m else f"<@{uid}>")
-    return "
-".join(lines) if lines else "*None*"
+    return "\n".join(lines) if lines else "*None*"
 
 # ---------- Embed ----------
 async def roster_embed(ev: sqlite3.Row, guild: discord.Guild) -> discord.Embed:
