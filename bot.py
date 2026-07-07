@@ -1196,16 +1196,18 @@ async def sync(interaction: discord.Interaction):
     except Exception as e:
         await interaction.response.send_message(f"❌ Global sync failed: `{e}`", ephemeral=True)
 
-@tree.command(description="Full re-sync globally: clear then republish (admin only).")
+@tree.command(description="Safely publish the current global commands (admin only).")
 async def sync_full(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.manage_guild:
         await interaction.response.send_message("You must have Manage Server.", ephemeral=True); return
     try:
-        tree.clear_commands(guild=None)
+        # Important: do NOT call tree.clear_commands(guild=None) here.
+        # In discord.py that clears this bot's in-memory global command tree,
+        # so syncing afterwards publishes zero commands.
         synced = await tree.sync()
-        await interaction.response.send_message(f"🌍 Full global re-sync complete: **{len(synced)}** command(s).", ephemeral=True)
+        await interaction.response.send_message(f"🌍 Global command sync complete: **{len(synced)}** command(s) published.", ephemeral=True)
     except Exception as e:
-        await interaction.response.send_message(f"❌ Full global re-sync failed: `{e}`", ephemeral=True)
+        await interaction.response.send_message(f"❌ Global sync failed: `{e}`", ephemeral=True)
 
 # ---- Utility ----
 @tree.command(description="Set number of squads (1 or 2).")
