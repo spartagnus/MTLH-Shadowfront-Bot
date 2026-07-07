@@ -35,6 +35,9 @@ if not DB_PATH:
     DB_PATH = "/data/shadowfront.db" if os.path.isdir("/data") else DEFAULT_DB
 # Control global sync on startup (default true)
 SYNC_ON_STARTUP = os.getenv("SYNC_ON_STARTUP", "true").lower() in ("1", "true", "yes")
+# Always sync commands once per bot process on startup/redeploy.
+# This avoids needing to manually run /sync after uploading a new version.
+STARTUP_SYNC_DONE = False
 
 FIXED_EVENT_NAME = "Shadowfront"
 
@@ -585,6 +588,7 @@ async def refresh_roster_message(guild: discord.Guild):
 # ---------- Startup ----------
 @bot.event
 async def on_ready():
+    global STARTUP_SYNC_DONE
     init_db()
     # Ensure the single event exists for every guild the bot is in
     with db() as conn:
@@ -596,12 +600,15 @@ async def on_ready():
         names = [c.name for c in tree.get_commands()]
         print(f"Loaded {len(names)} commands: {names}")
 
-        # --- GLOBAL SYNC ---
-        if SYNC_ON_STARTUP:
-            synced = await tree.sync()  # publish globally
-            print(f"[GLOBAL] Published {len(synced)} commands globally.")
+        # --- GLOBAL SYNC ON STARTUP/REDEPLOY ---
+        # Sync once per process startup. Do not clear commands here; tree.sync() publishes
+        # the commands currently registered in this file.
+        if not STARTUP_SYNC_DONE:
+            synced = await tree.sync()
+            STARTUP_SYNC_DONE = True
+            print(f"[GLOBAL] Startup sync published {len(synced)} command(s) globally.")
         else:
-            print("[GLOBAL] Skipping global sync on startup (SYNC_ON_STARTUP=false).")
+            print("[GLOBAL] Startup sync already completed for this process; skipping duplicate on_ready sync.")
 
         print(f"Using DB at: {os.path.abspath(DB_PATH)}")
         print(f"Intents.Members enabled: {bot.intents.members}")
