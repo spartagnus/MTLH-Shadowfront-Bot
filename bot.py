@@ -647,6 +647,52 @@ class SquadChoice(app_commands.Transformer):
         return "SA" if v == "A" else "SB"
 
 # ---- Config/admin (no event name args) ----
+@tree.command(description="Add a manager for Shadowfront (admin/manager only).")
+async def addmanager(interaction: discord.Interaction, user: discord.Member):
+    with db() as conn:
+        ev = get_fixed_event(conn, interaction.guild_id) or ensure_fixed_event(conn, interaction.guild_id, interaction.user.id)
+
+        if not user_is_event_manager_or_admin(ev, interaction.user):
+            await interaction.response.send_message(
+                "You must be an event manager or have Manage Server.",
+                ephemeral=True
+            )
+            return
+
+        conn.execute(
+            "INSERT OR IGNORE INTO managers(event_id, user_id) VALUES (?, ?)",
+            (ev["id"], user.id)
+        )
+
+    await interaction.response.send_message(
+        f"{user.mention} is now a Shadowfront manager.",
+        ephemeral=True
+    )
+@tree.command(description="Remove a manager from Shadowfront (admin/manager only).")
+async def removemanager(interaction: discord.Interaction, user: discord.Member):
+    with db() as conn:
+        ev = get_fixed_event(conn, interaction.guild_id)
+
+        if not ev:
+            await interaction.response.send_message("Event not found.", ephemeral=True)
+            return
+
+        if not user_is_event_manager_or_admin(ev, interaction.user):
+            await interaction.response.send_message(
+                "You must be an event manager or have Manage Server.",
+                ephemeral=True
+            )
+            return
+
+        conn.execute(
+            "DELETE FROM managers WHERE event_id=? AND user_id=?",
+            (ev["id"], user.id)
+        )
+
+    await interaction.response.send_message(
+        f"{user.mention} has been removed as a Shadowfront manager.",
+        ephemeral=True
+    )
 @tree.command(description="Set the roster display channel (manager only).")
 async def setchannel(interaction: discord.Interaction, channel: discord.TextChannel):
     with db() as conn:
