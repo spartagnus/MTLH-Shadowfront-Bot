@@ -136,7 +136,7 @@ def ensure_fixed_event(conn: sqlite3.Connection, guild_id: int, creator_id: int)
     c.execute("SELECT * FROM events WHERE guild_id=? AND name=?", (guild_id, FIXED_EVENT_NAME))
     row = c.fetchone()
     if row:
-        # New roster layout: one main squad per team with 3 commander slots + 17 member slots.
+        # New roster layout: one main squad per Squad 1/Squad 2 entry with 3 commander slots + 17 member slots.
         # Backups are separate and must be chosen explicitly.
         c.execute(
             """
@@ -145,14 +145,16 @@ def ensure_fixed_event(conn: sqlite3.Connection, guild_id: int, creator_id: int)
                 squad_b_size=0,
                 squad_a_commander_quota=3,
                 squad_b_commander_quota=0,
-                squads=1
+                squads=1,
+                team_a_label=CASE WHEN team_a_label IS NULL OR team_a_label LIKE '%Team 1%' THEN 'Shadowfront Squad 1' ELSE team_a_label END,
+                team_b_label=CASE WHEN team_b_label IS NULL OR team_b_label LIKE '%Team 2%' THEN 'Shadowfront Squad 2' ELSE team_b_label END
             WHERE id=?
             """,
             (row["id"],)
         )
         c.execute("SELECT * FROM events WHERE id=?", (row["id"],))
         return c.fetchone()
-    # Defaults: two teams; one main squad per team (3 commanders + 17 members), backups 10
+    # Defaults: two squad entries; one main squad per Squad 1/Squad 2 entry (3 commanders + 17 members), backups 10
     c.execute(
         """
         INSERT INTO events(
@@ -168,7 +170,7 @@ def ensure_fixed_event(conn: sqlite3.Connection, guild_id: int, creator_id: int)
         """,
         (
             guild_id, FIXED_EVENT_NAME, 20, 10, 2,
-            creator_id, "Shadowfront Team 1", "Shadowfront Team 2",
+            creator_id, "Shadowfront Squad 1", "Shadowfront Squad 2",
             20, 0, 3, 0
         )
     )
@@ -271,7 +273,7 @@ def button_dual_time_label(ev: sqlite3.Row, team: str) -> str:
 
 # ---------- Roster logic ----------
 def team_label(ev: sqlite3.Row, team: str) -> str:
-    return (ev["team_a_label"] or "Shadowfront Team 1") if team == "A" else (ev["team_b_label"] or "Shadowfront Team 2")
+    return (ev["team_a_label"] or "Shadowfront Squad 1") if team == "A" else (ev["team_b_label"] or "Shadowfront Squad 2")
 
 def add_participant(conn, ev: sqlite3.Row, user_id: int, team: str, squad: Optional[str] = None, force_backup: bool = False) -> Tuple[str, str]:
     """Add a participant to either main or backup.
@@ -394,18 +396,18 @@ def roster_embed(ev: sqlite3.Row, guild: discord.Guild) -> discord.Embed:
 
 # ---------- Buttons (reduced UI) ----------
 class RosterView(discord.ui.View):
-    """Team main buttons, team backup buttons, and Leave."""
+    """Squad main buttons, squad backup buttons, and Leave."""
     def __init__(self, ev: sqlite3.Row):
         super().__init__(timeout=None)
         self.teams = int(ev["teams"] or 2)
         self.ev = ev
 
-        self._add_button(f"Team 1 Main {button_dual_time_label(ev, 'A')}", discord.ButtonStyle.primary, 0, lambda i: self._join_main(i, "A"))
-        self._add_button(f"Team 1 Backup {button_dual_time_label(ev, 'A')}", discord.ButtonStyle.secondary, 1, lambda i: self._join_backup(i, "A"))
+        self._add_button(f"Squad 1 Main {button_dual_time_label(ev, 'A')}", discord.ButtonStyle.primary, 0, lambda i: self._join_main(i, "A"))
+        self._add_button(f"Squad 1 Backup {button_dual_time_label(ev, 'A')}", discord.ButtonStyle.secondary, 1, lambda i: self._join_backup(i, "A"))
 
         if self.teams >= 2:
-            self._add_button(f"Team 2 Main {button_dual_time_label(ev, 'B')}", discord.ButtonStyle.primary, 0, lambda i: self._join_main(i, "B"))
-            self._add_button(f"Team 2 Backup {button_dual_time_label(ev, 'B')}", discord.ButtonStyle.secondary, 1, lambda i: self._join_backup(i, "B"))
+            self._add_button(f"Squad 2 Main {button_dual_time_label(ev, 'B')}", discord.ButtonStyle.primary, 0, lambda i: self._join_main(i, "B"))
+            self._add_button(f"Squad 2 Backup {button_dual_time_label(ev, 'B')}", discord.ButtonStyle.secondary, 1, lambda i: self._join_backup(i, "B"))
 
         self._add_button("Leave", discord.ButtonStyle.danger, 2, self._leave_common)
 
@@ -621,7 +623,7 @@ class TeamChoice(app_commands.Transformer):
     async def transform(self, interaction: discord.Interaction, value: str) -> str:
         v = value.upper()
         if v not in ("A", "B"):
-            raise app_commands.AppCommandError("Team must be A or B.")
+            raise app_commands.AppCommandError("Squad must be A or B.")
         return v
 
 class SquadChoice(app_commands.Transformer):
@@ -699,14 +701,15 @@ async def setchannel(interaction: discord.Interaction, channel: discord.TextChan
     await ensure_roster_message(ev, interaction.guild)
     await interaction.response.send_message(f"Display channel set to {channel.mention}.", ephemeral=True)
 
-@tree.command(description="Set the time slot for Team 1 or Team 2 (choose 09:00, 18:00, or 23:00 UTC).")
-@app_commands.describe(team="A or B (A = Team 1, B = Team 2)", slot="One of 09:00, 18:00, 23:00 UTC")
+@tree.command(description="Set the time slot for Squad 1 or Squad 2 (choose 09:00, 18:00, or 23:00 UTC).")
+@app_commands.rename(team="squad")
+@app_commands.describe(team="A or B (A = Squad 1, B = Squad 2)", slot="One of 09:00, 18:00, 23:00 UTC")
 @app_commands.choices(slot=[
     app_commands.Choice(name="09:00 UTC", value="0900"),
     app_commands.Choice(name="18:00 UTC", value="1800"),
     app_commands.Choice(name="23:00 UTC", value="2300"),
 ])
-async def setteamtime(interaction: discord.Interaction, team: app_commands.Transform[str, TeamChoice], slot: str):
+async def setsquadtime(interaction: discord.Interaction, team: app_commands.Transform[str, TeamChoice], slot: str):
     with db() as conn:
         ev = get_fixed_event(conn, interaction.guild_id) or ensure_fixed_event(conn, interaction.guild_id, interaction.user.id)
         if not user_is_event_manager_or_admin(ev, interaction.user):
@@ -790,7 +793,9 @@ async def reset(interaction: discord.Interaction, clear_message: bool = False):
     await interaction.response.send_message("Event reset. Live roster updated.", ephemeral=True)
 
 
-@tree.command(description="Assign a commander to a team (manager only).")
+@tree.command(description="Assign a commander to a squad (manager only).")
+@app_commands.rename(team="squad")
+@app_commands.describe(team="A or B (A = Squad 1, B = Squad 2)")
 async def setcommander(
     interaction: discord.Interaction,
     team: app_commands.Transform[str, TeamChoice],
@@ -818,7 +823,7 @@ async def setcommander(
         if existing:
             if existing["team"] != team:
                 await interaction.response.send_message(
-                    f"{user.mention} is registered on {team_label(ev, existing['team'])}. Remove them first before assigning them to this team.",
+                    f"{user.mention} is registered on {team_label(ev, existing['team'])}. Remove them first before assigning them to this squad.",
                     ephemeral=True
                 )
                 return
@@ -844,6 +849,8 @@ async def setcommander(
 
 
 @tree.command(description="Remove commander status (manager only).")
+@app_commands.rename(team="squad")
+@app_commands.describe(team="A or B (A = Squad 1, B = Squad 2)")
 async def unsetcommander(
     interaction: discord.Interaction,
     team: app_commands.Transform[str, TeamChoice],
@@ -896,6 +903,8 @@ async def unsetcommander(
 
 # ---- Player actions ----
 @tree.command(description="Join Shadowfront as a main or backup.")
+@app_commands.rename(team="squad")
+@app_commands.describe(team="A or B (A = Squad 1, B = Squad 2)")
 async def join(
     interaction: discord.Interaction,
     team: app_commands.Transform[str, TeamChoice],
@@ -941,11 +950,12 @@ async def roster(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ---- Manager: add/remove member ----
-@tree.command(description="(Manager) Add a member to Team 1 or Team 2 as main or backup.")
+@tree.command(description="(Manager) Add a member to Squad 1 or Squad 2 as main or backup.")
+@app_commands.rename(team="squad")
 @app_commands.describe(
     user="Member to add",
-    team="A or B (A = Team 1, B = Team 2)",
-    as_backup="If true, add the member to the backups list for that team"
+    team="A or B (A = Squad 1, B = Squad 2)",
+    as_backup="If true, add the member to the backups list for that squad"
 )
 async def addmember(
     interaction: discord.Interaction,
@@ -1043,29 +1053,29 @@ async def sync_full(interaction: discord.Interaction):
         await interaction.response.send_message(f"❌ Full global re-sync failed: `{e}`", ephemeral=True)
 
 # ---- Utility ----
-@tree.command(description="Set number of teams (1 or 2).")
-async def setteams(interaction: discord.Interaction, count: app_commands.Range[int, 1, 2]):
+@tree.command(description="Set number of squads (1 or 2).")
+async def setsquadcount(interaction: discord.Interaction, count: app_commands.Range[int, 1, 2]):
     with db() as conn:
         ev = get_fixed_event(conn, interaction.guild_id) or ensure_fixed_event(conn, interaction.guild_id, interaction.user.id)
         if not user_is_event_manager_or_admin(ev, interaction.user):
             await interaction.response.send_message("You must be an event manager or have Manage Server.", ephemeral=True); return
         current = int(ev["teams"] or 2)
         if count == current:
-            await interaction.response.send_message(f"Teams already set to {count}.", ephemeral=True); return
+            await interaction.response.send_message(f"Squads already set to {count}.", ephemeral=True); return
         if count == 1:
             c = conn.cursor()
             total_b = c.execute("SELECT COUNT(*) FROM rosters WHERE event_id=? AND team='B'", (ev["id"],)).fetchone()[0]
             if total_b > 0:
-                await interaction.response.send_message(f"Cannot set to 1 team: Team 2 currently has {total_b} member(s). Remove or move them first.", ephemeral=True); return
+                await interaction.response.send_message(f"Cannot set to 1 squad: Squad 2 currently has {total_b} member(s). Remove or move them first.", ephemeral=True); return
         conn.execute("UPDATE events SET teams=? WHERE id=?", (count, ev["id"]))
     await refresh_roster_message(interaction.guild)
-    await interaction.response.send_message(f"Set number of teams to **{count}**.", ephemeral=True)
+    await interaction.response.send_message(f"Set number of squads to **{count}**.", ephemeral=True)
 
 @tree.command(description="Configure main and backup limits (manager only).")
 @app_commands.describe(
-    main_members="Number of normal main members per team, not counting commanders",
-    commander_slots="Number of commander slots per team",
-    backup_size="Number of backup slots per team"
+    main_members="Number of normal main members per squad, not counting commanders",
+    commander_slots="Number of commander slots per squad",
+    backup_size="Number of backup slots per squad"
 )
 async def setlimits(
     interaction: discord.Interaction,
@@ -1094,13 +1104,13 @@ async def setlimits(
                 (ev["id"], team_code)
             ).fetchone()[0]
             if current_cmd > commander_slots:
-                await interaction.response.send_message(f"Team {team_code} currently has {current_cmd} commanders, which exceeds the proposed limit.", ephemeral=True)
+                await interaction.response.send_message(f"Squad {1 if team_code == 'A' else 2} currently has {current_cmd} commanders, which exceeds the proposed limit.", ephemeral=True)
                 return
             if current_main > main_members:
-                await interaction.response.send_message(f"Team {team_code} currently has {current_main} main members, which exceeds the proposed limit.", ephemeral=True)
+                await interaction.response.send_message(f"Squad {1 if team_code == 'A' else 2} currently has {current_main} main members, which exceeds the proposed limit.", ephemeral=True)
                 return
             if current_backup > backup_size:
-                await interaction.response.send_message(f"Team {team_code} currently has {current_backup} backups, which exceeds the proposed limit.", ephemeral=True)
+                await interaction.response.send_message(f"Squad {1 if team_code == 'A' else 2} currently has {current_backup} backups, which exceeds the proposed limit.", ephemeral=True)
                 return
 
         conn.execute(
@@ -1110,7 +1120,7 @@ async def setlimits(
 
     await refresh_roster_message(interaction.guild)
     await interaction.response.send_message(
-        f"Limits updated: **{main_members} mains**, **{commander_slots} commanders**, **{backup_size} backups** per team.",
+        f"Limits updated: **{main_members} mains**, **{commander_slots} commanders**, **{backup_size} backups** per squad.",
         ephemeral=True
     )
 
