@@ -743,14 +743,14 @@ class TeamChoice(app_commands.Transformer):
     async def transform(self, interaction: discord.Interaction, value: str) -> str:
         v = value.upper()
         if v not in ("A", "B"):
-            raise app_commands.AppCommandError("Squad must be A or B.")
+            raise app_commands.AppCommandError("Please choose Squad 1 or Squad 2.")
         return v
 
 class SquadChoice(app_commands.Transformer):
     async def transform(self, interaction: discord.Interaction, value: str) -> str:
         v = value.upper()
         if v not in ("A", "B"):
-            raise app_commands.AppCommandError("Squad must be A or B.")
+            raise app_commands.AppCommandError("Please choose Squad 1 or Squad 2.")
         with db() as conn:
             ev = get_fixed_event(conn, interaction.guild_id)
         if v == "B" and (not ev or event_squads(ev) < 2):
@@ -823,13 +823,16 @@ async def setchannel(interaction: discord.Interaction, channel: discord.TextChan
 
 @tree.command(description="Set the time slot for Squad 1 or Squad 2 (choose 09:00, 18:00, or 23:00 UTC).")
 @app_commands.rename(team="squad")
-@app_commands.describe(team="A or B (A = Squad 1, B = Squad 2)", slot="One of 09:00, 18:00, 23:00 UTC")
-@app_commands.choices(slot=[
+@app_commands.describe(team="Choose Squad 1 or Squad 2", slot="One of 09:00, 18:00, 23:00 UTC")
+@app_commands.choices(team=[
+    app_commands.Choice(name="Squad 1", value="A"),
+    app_commands.Choice(name="Squad 2", value="B"),
+], slot=[
     app_commands.Choice(name="09:00 UTC", value="0900"),
     app_commands.Choice(name="18:00 UTC", value="1800"),
     app_commands.Choice(name="23:00 UTC", value="2300"),
 ])
-async def setsquadtime(interaction: discord.Interaction, team: app_commands.Transform[str, TeamChoice], slot: str):
+async def setsquadtime(interaction: discord.Interaction, team: str, slot: str):
     with db() as conn:
         ev = get_fixed_event(conn, interaction.guild_id) or ensure_fixed_event(conn, interaction.guild_id, interaction.user.id)
         if not user_is_event_manager_or_admin(ev, interaction.user):
@@ -914,10 +917,14 @@ async def reset(interaction: discord.Interaction, clear_message: bool = True):
 
 @tree.command(description="Assign a commander to a squad (manager only).")
 @app_commands.rename(team="squad")
-@app_commands.describe(team="A or B (A = Squad 1, B = Squad 2)")
+@app_commands.describe(team="Choose Squad 1 or Squad 2")
+@app_commands.choices(team=[
+    app_commands.Choice(name="Squad 1", value="A"),
+    app_commands.Choice(name="Squad 2", value="B"),
+])
 async def setcommander(
     interaction: discord.Interaction,
-    team: app_commands.Transform[str, TeamChoice],
+    team: str,
     user: discord.Member
 ):
     with db() as conn:
@@ -969,10 +976,14 @@ async def setcommander(
 
 @tree.command(description="Remove commander status (manager only).")
 @app_commands.rename(team="squad")
-@app_commands.describe(team="A or B (A = Squad 1, B = Squad 2)")
+@app_commands.describe(team="Choose Squad 1 or Squad 2")
+@app_commands.choices(team=[
+    app_commands.Choice(name="Squad 1", value="A"),
+    app_commands.Choice(name="Squad 2", value="B"),
+])
 async def unsetcommander(
     interaction: discord.Interaction,
-    team: app_commands.Transform[str, TeamChoice],
+    team: str,
     user: discord.Member,
     demote_to_backup: bool = False
 ):
@@ -1023,10 +1034,14 @@ async def unsetcommander(
 # ---- Player actions ----
 @tree.command(description="Join Shadowfront as a main or backup.")
 @app_commands.rename(team="squad")
-@app_commands.describe(team="A or B (A = Squad 1, B = Squad 2)")
+@app_commands.describe(team="Choose Squad 1 or Squad 2")
+@app_commands.choices(team=[
+    app_commands.Choice(name="Squad 1", value="A"),
+    app_commands.Choice(name="Squad 2", value="B"),
+])
 async def join(
     interaction: discord.Interaction,
-    team: app_commands.Transform[str, TeamChoice],
+    team: str,
     as_backup: bool = False
 ):
     with db() as conn:
@@ -1073,13 +1088,17 @@ async def roster(interaction: discord.Interaction):
 @app_commands.rename(team="squad")
 @app_commands.describe(
     user="Member to add",
-    team="A or B (A = Squad 1, B = Squad 2)",
+    team="Choose Squad 1 or Squad 2",
     as_backup="If true, add the member to the backups list for that squad"
 )
+@app_commands.choices(team=[
+    app_commands.Choice(name="Squad 1", value="A"),
+    app_commands.Choice(name="Squad 2", value="B"),
+])
 async def addmember(
     interaction: discord.Interaction,
     user: discord.Member,
-    team: app_commands.Transform[str, TeamChoice],
+    team: str,
     as_backup: bool = False
 ):
     with db() as conn:
@@ -1116,14 +1135,18 @@ async def addmember(
 @app_commands.rename(team="squad")
 @app_commands.describe(
     name="Plain text name to show on the roster",
-    team="A or B (A = Squad 1, B = Squad 2)",
+    team="Choose Squad 1 or Squad 2",
     as_backup="If true, add the name to backups instead of mains",
     as_commander="If true, add the name as a commander instead of a normal main"
 )
+@app_commands.choices(team=[
+    app_commands.Choice(name="Squad 1", value="A"),
+    app_commands.Choice(name="Squad 2", value="B"),
+])
 async def addmanualmember(
     interaction: discord.Interaction,
     name: str,
-    team: app_commands.Transform[str, TeamChoice],
+    team: str,
     as_backup: bool = False,
     as_commander: bool = False
 ):
