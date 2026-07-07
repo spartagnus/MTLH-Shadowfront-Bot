@@ -105,7 +105,7 @@ def init_db():
             squad_a_commander_quota INTEGER DEFAULT 2,
             squad_b_commander_quota INTEGER DEFAULT 1,
             auto_refresh_enabled INTEGER DEFAULT 1,
-            auto_refresh_day TEXT DEFAULT 'MON',
+            auto_refresh_day TEXT DEFAULT 'SUN',
             auto_refresh_hour INTEGER DEFAULT 9,
             auto_refresh_tz TEXT DEFAULT 'Australia/Brisbane',
             auto_refresh_last_epoch INTEGER,
@@ -157,7 +157,8 @@ def ensure_fixed_event(conn: sqlite3.Connection, guild_id: int, creator_id: int)
                 squad_b_commander_quota=0,
                 squads=1,
                 team_a_label=CASE WHEN team_a_label IS NULL OR team_a_label LIKE '%Team 1%' THEN 'Shadowfront Squad 1' ELSE team_a_label END,
-                team_b_label=CASE WHEN team_b_label IS NULL OR team_b_label LIKE '%Team 2%' THEN 'Shadowfront Squad 2' ELSE team_b_label END
+                team_b_label=CASE WHEN team_b_label IS NULL OR team_b_label LIKE '%Team 2%' THEN 'Shadowfront Squad 2' ELSE team_b_label END,
+                auto_refresh_day=CASE WHEN auto_refresh_day IS NULL OR auto_refresh_day='MON' THEN 'SUN' ELSE auto_refresh_day END
             WHERE id=?
             """,
             (row["id"],)
@@ -176,7 +177,7 @@ def ensure_fixed_event(conn: sqlite3.Connection, guild_id: int, creator_id: int)
             auto_refresh_enabled, auto_refresh_day, auto_refresh_hour, auto_refresh_tz,
             squads, remind_enabled, remind_lead_minutes
         )
-        VALUES (?,?,?,?,?, 'open', ?, NULL, NULL, ?, ?, NULL, NULL, ?, ?, ?, ?, 1, 'MON', 9, 'Australia/Brisbane', 1, 1, 60)
+        VALUES (?,?,?,?,?, 'open', ?, NULL, NULL, ?, ?, NULL, NULL, ?, ?, ?, ?, 1, 'SUN', 9, 'Australia/Brisbane', 1, 1, 60)
         """,
         (
             guild_id, FIXED_EVENT_NAME, 20, 10, 2,
@@ -633,9 +634,37 @@ async def on_ready():
 
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
-# ---------- Weekly auto-refresh ----------
+# ---------- Weekly auto-reset ----------
 def map_weekday_name(dt: datetime) -> str:
     return ["MON","TUE","WED","THU","FRI","SAT","SUN"][dt.weekday()]
+
+async def reset_roster_and_post_new_message(guild: discord.Guild, ev: sqlite3.Row) -> None:
+    """Clear the roster, delete the old live roster message if possible, and post a fresh one.
+
+    This keeps the configured display channel but makes the roster the newest message in that channel.
+    """
+    channel_id = ev["display_channel_id"]
+    message_id = ev["display_message_id"]
+
+    if channel_id and message_id:
+        channel = guild.get_channel(channel_id)
+        if channel:
+            try:
+                old_msg = await channel.fetch_message(message_id)
+                await old_msg.delete()
+            except (discord.NotFound, discord.Forbidden):
+                pass
+
+    with db() as conn:
+        conn.execute("DELETE FROM rosters WHERE event_id=?", (ev["id"],))
+        conn.execute(
+            "UPDATE events SET status='open', display_message_id=NULL WHERE id=?",
+            (ev["id"],)
+        )
+        fresh_ev = get_fixed_event(conn, guild.id)
+
+    if fresh_ev:
+        await ensure_roster_message(fresh_ev, guild)
 
 @tasks.loop(minutes=10)
 async def weekly_refresh_task():
@@ -650,7 +679,7 @@ async def weekly_refresh_task():
             except Exception:
                 tz = timezone.utc
             now_local = datetime.now(tz)
-            if map_weekday_name(now_local) != (ev["auto_refresh_day"] or "MON").upper():
+            if map_weekday_name(now_local) != (ev["auto_refresh_day"] or "SUN").upper():
                 continue
             if now_local.hour != int(ev["auto_refresh_hour"] or 9):
                 continue
@@ -659,11 +688,12 @@ async def weekly_refresh_task():
             if last >= start_of_hour:
                 continue
             try:
-                await refresh_roster_message(g)
+                await reset_roster_and_post_new_message(g, ev)
                 with db() as conn2:
                     conn2.execute("UPDATE events SET auto_refresh_last_epoch=? WHERE id=?", (start_of_hour, ev["id"]))
+                print(f"Weekly roster reset completed in guild {g.id}.")
             except Exception as e:
-                print(f"Auto-refresh failed in guild {g.id}: {e}")
+                print(f"Weekly auto-reset failed in guild {g.id}: {e}")
 
 # ---------- Reminders (every 5 minutes) ----------
 @tasks.loop(minutes=5)
@@ -811,8 +841,8 @@ async def setsquadtime(interaction: discord.Interaction, team: app_commands.Tran
     await refresh_roster_message(interaction.guild)
     await interaction.response.send_message(f"Set **{team_label(ev, team)}** time to **{slot} UTC**.", ephemeral=True)
 
-@tree.command(description="Configure weekly auto-refresh for the roster (manager only).")
-async def setautorefresh(interaction: discord.Interaction, enable: bool = True, day: str = "MON", hour: int = 9, tz: str = "Australia/Brisbane"):
+@tree.command(description="Configure weekly auto-reset for the roster (manager only).")
+async def setautorefresh(interaction: discord.Interaction, enable: bool = True, day: str = "SUN", hour: int = 9, tz: str = "Australia/Brisbane"):
     day = day.upper()
     if day not in {"MON","TUE","WED","THU","FRI","SAT","SUN"}:
         await interaction.response.send_message("Invalid day. Use MON..SUN.", ephemeral=True); return
@@ -833,7 +863,7 @@ async def setautorefresh(interaction: discord.Interaction, enable: bool = True, 
             """,
             (1 if enable else 0, day, hour, tz, ev["id"])
         )
-    await interaction.response.send_message(f"Auto-refresh {'enabled' if enable else 'disabled'}: {day} @ {hour:02d}:00 ({tz}).", ephemeral=True)
+    await interaction.response.send_message(f"Auto-reset {'enabled' if enable else 'disabled'}: {day} @ {hour:02d}:00 ({tz}).", ephemeral=True)
 
 # ---- Manager actions (no UI buttons) ----
 @tree.command(description="Lock Shadowfront to stop new signups (manager only).")
@@ -860,27 +890,26 @@ async def unlock(interaction: discord.Interaction):
     await refresh_roster_message(interaction.guild)
     await interaction.response.send_message("Event unlocked. Roster updated.", ephemeral=True)
 
-@tree.command(description="Reset Shadowfront: clears all mains/backups and re-opens signups (manager only).")
-async def reset(interaction: discord.Interaction, clear_message: bool = False):
+@tree.command(description="Reset Shadowfront: clears all mains/backups and posts a fresh roster message (manager only).")
+async def reset(interaction: discord.Interaction, clear_message: bool = True):
     with db() as conn:
         ev = get_fixed_event(conn, interaction.guild_id)
         if not ev:
-            await interaction.response.send_message("Event not found.", ephemeral=True); return
+            await interaction.response.send_message("Event not found.", ephemeral=True)
+            return
         if not user_is_event_manager_or_admin(ev, interaction.user):
-            await interaction.response.send_message("You must be an event manager or have Manage Server.", ephemeral=True); return
-        conn.execute("DELETE FROM rosters WHERE event_id=?", (ev["id"],))
-        conn.execute("UPDATE events SET status='open' WHERE id=?", (ev["id"],))
-        if clear_message and ev["display_channel_id"] and ev["display_message_id"]:
-            channel = interaction.guild.get_channel(ev["display_channel_id"])
-            if channel:
-                try:
-                    msg = await channel.fetch_message(ev["display_message_id"])
-                    await msg.delete()
-                except (discord.NotFound, discord.Forbidden):
-                    pass
-            conn.execute("UPDATE events SET display_message_id=NULL WHERE id=?", (ev["id"],))
-    await refresh_roster_message(interaction.guild)
-    await interaction.response.send_message("Event reset. Live roster updated.", ephemeral=True)
+            await interaction.response.send_message("You must be an event manager or have Manage Server.", ephemeral=True)
+            return
+
+    if clear_message:
+        await reset_roster_and_post_new_message(interaction.guild, ev)
+    else:
+        with db() as conn:
+            conn.execute("DELETE FROM rosters WHERE event_id=?", (ev["id"],))
+            conn.execute("UPDATE events SET status='open' WHERE id=?", (ev["id"],))
+        await refresh_roster_message(interaction.guild)
+
+    await interaction.response.send_message("Event reset. Fresh roster message posted." if clear_message else "Event reset. Live roster updated.", ephemeral=True)
 
 
 @tree.command(description="Assign a commander to a squad (manager only).")
