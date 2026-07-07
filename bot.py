@@ -382,7 +382,15 @@ def roster_embed(ev: sqlite3.Row, guild: discord.Guild) -> discord.Embed:
             commanders_sa, mains_sa, commanders_sb, mains_sb, backups = get_roster(conn, ev["id"], team)
 
             def mentions(uids: List[int]) -> str:
-                names = [guild.get_member(uid).mention if guild.get_member(uid) else f"<@{uid}>" for uid in uids]
+                # Display roster names as plain text instead of clickable Discord mentions.
+                # Prefer the member's server nickname/display name; fall back to username, then user ID.
+                names = []
+                for uid in uids:
+                    member = guild.get_member(uid)
+                    if member:
+                        names.append(member.display_name)
+                    else:
+                        names.append(f"User ID: {uid}")
                 return "\n".join(names) if names else "*None*"
 
             embed.add_field(
