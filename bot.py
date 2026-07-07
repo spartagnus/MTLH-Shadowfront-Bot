@@ -683,7 +683,13 @@ async def removemanager(interaction: discord.Interaction, user: discord.Member):
                 ephemeral=True
             )
             return
-
+            
+        if user.id == interaction.user.id:
+            await interaction.response.send_message(
+                "You can't remove yourself as a manager.",
+                ephemeral=True
+            )
+            return
         conn.execute(
             "DELETE FROM managers WHERE event_id=? AND user_id=?",
             (ev["id"], user.id)
